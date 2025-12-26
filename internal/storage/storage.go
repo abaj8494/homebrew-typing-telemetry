@@ -190,6 +190,40 @@ func (s *Store) GetHourlyStats(date string) ([]HourlyStats, error) {
 	return stats, nil
 }
 
+// GetHistoricalStats returns stats for the last N days
+func (s *Store) GetHistoricalStats(days int) ([]DailyStats, error) {
+	now := time.Now()
+	stats := make([]DailyStats, days)
+
+	for i := days - 1; i >= 0; i-- {
+		date := now.AddDate(0, 0, -i).Format("2006-01-02")
+		dayStat, err := s.GetDayStats(date)
+		if err != nil {
+			return nil, err
+		}
+		stats[days-1-i] = *dayStat
+	}
+
+	return stats, nil
+}
+
+// GetAllHourlyStatsForDays returns hourly stats for multiple days (for heatmap)
+func (s *Store) GetAllHourlyStatsForDays(days int) (map[string][]HourlyStats, error) {
+	result := make(map[string][]HourlyStats)
+	now := time.Now()
+
+	for i := days - 1; i >= 0; i-- {
+		date := now.AddDate(0, 0, -i).Format("2006-01-02")
+		hourlyStats, err := s.GetHourlyStats(date)
+		if err != nil {
+			return nil, err
+		}
+		result[date] = hourlyStats
+	}
+
+	return result, nil
+}
+
 func (s *Store) Close() error {
 	return s.db.Close()
 }

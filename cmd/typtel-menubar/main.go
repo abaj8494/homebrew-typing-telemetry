@@ -22,9 +22,12 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strings"
 	"syscall"
 	"time"
 
@@ -139,7 +142,8 @@ func updateMenuBarTitle() {
 		return
 	}
 
-	title := fmt.Sprintf("⌨️ %s", formatCompact(stats.Keystrokes))
+	words := stats.Keystrokes / 5
+	title := fmt.Sprintf("⌨️ %s | %sw", formatCompact(stats.Keystrokes), formatCompact(words))
 	menuet.App().SetMenuState(&menuet.MenuState{
 		Title: title,
 	})
@@ -161,12 +165,23 @@ func menuItems() []menuet.MenuItem {
 		keystrokeCount = stats.Keystrokes
 	}
 
+	todayWords := keystrokeCount / 5
+	weekWords := weekTotal / 5
+
 	return []menuet.MenuItem{
 		{
-			Text: fmt.Sprintf("Today: %s keystrokes", formatNumber(keystrokeCount)),
+			Text: fmt.Sprintf("Today: %s keystrokes (~%s words)", formatNumber(keystrokeCount), formatNumber(todayWords)),
 		},
 		{
-			Text: fmt.Sprintf("This Week: %s keystrokes", formatNumber(weekTotal)),
+			Text: fmt.Sprintf("This Week: %s keystrokes (~%s words)", formatNumber(weekTotal), formatNumber(weekWords)),
+		},
+		{
+			Type: menuet.Separator,
+		},
+		{
+			Text:     "View Charts",
+			Clicked:  openCharts,
+			Children: chartMenuItems,
 		},
 		{
 			Type: menuet.Separator,
@@ -227,3 +242,407 @@ func formatCompact(n int64) string {
 	}
 	return fmt.Sprintf("%d", n)
 }
+
+func chartMenuItems() []menuet.MenuItem {
+	return []menuet.MenuItem{
+		{
+			Text:    "Weekly Overview",
+			Clicked: func() { openChartsWithDays(7) },
+		},
+		{
+			Text:    "Monthly Overview",
+			Clicked: func() { openChartsWithDays(30) },
+		},
+	}
+}
+
+func openCharts() {
+	openChartsWithDays(14) // Default to 2 weeks
+}
+
+func openChartsWithDays(days int) {
+	go func() {
+		htmlPath, err := generateChartsHTML(days)
+		if err != nil {
+			log.Printf("Failed to generate charts: %v", err)
+			return
+		}
+
+		cmd := exec.Command("open", htmlPath)
+		if err := cmd.Run(); err != nil {
+			log.Printf("Failed to open charts: %v", err)
+		}
+	}()
+}
+
+func generateChartsHTML(days int) (string, error) {
+	// Get historical data
+	histStats, err := store.GetHistoricalStats(days)
+	if err != nil {
+		return "", err
+	}
+
+	// Get hourly data for heatmap
+	hourlyData, err := store.GetAllHourlyStatsForDays(days)
+	if err != nil {
+		return "", err
+	}
+
+	// Prepare data for charts
+	var labels, keystrokeData, wordData []string
+	for _, stat := range histStats {
+		// Parse date to get short format
+		t, _ := time.Parse("2006-01-02", stat.Date)
+		labels = append(labels, fmt.Sprintf("'%s'", t.Format("Jan 2")))
+		keystrokeData = append(keystrokeData, fmt.Sprintf("%d", stat.Keystrokes))
+		wordData = append(wordData, fmt.Sprintf("%d", stat.Keystrokes/5))
+	}
+
+	// Prepare heatmap data
+	heatmapHTML := generateHeatmapHTML(hourlyData, days)
+
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html>
+<head>
+    <title>Typtel - Typing Statistics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%%, #16213e 100%%);
+            color: #eee;
+            min-height: 100vh;
+            padding: 30px;
+        }
+        h1 {
+            text-align: center;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .subtitle {
+            text-align: center;
+            color: #888;
+            margin-bottom: 30px;
+        }
+        .charts-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 30px;
+            max-width: 1400px;
+            margin: 0 auto 40px;
+        }
+        .chart-box {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .chart-box h2 {
+            margin-bottom: 20px;
+            font-size: 1.3em;
+            color: #aaa;
+        }
+        .heatmap-container {
+            max-width: 1400px;
+            margin: 0 auto;
+        }
+        .heatmap-box {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .heatmap-box h2 {
+            margin-bottom: 20px;
+            font-size: 1.3em;
+            color: #aaa;
+        }
+        .heatmap {
+            display: flex;
+            flex-direction: column;
+            gap: 3px;
+        }
+        .heatmap-row {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+        }
+        .heatmap-label {
+            width: 70px;
+            font-size: 11px;
+            color: #888;
+            text-align: right;
+            padding-right: 10px;
+        }
+        .heatmap-cell {
+            width: 20px;
+            height: 20px;
+            border-radius: 3px;
+            transition: transform 0.2s;
+        }
+        .heatmap-cell:hover {
+            transform: scale(1.3);
+            z-index: 10;
+        }
+        .hour-labels {
+            display: flex;
+            gap: 3px;
+            margin-left: 80px;
+            margin-bottom: 5px;
+        }
+        .hour-label {
+            width: 20px;
+            font-size: 10px;
+            color: #666;
+            text-align: center;
+        }
+        .legend {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            margin-top: 20px;
+        }
+        .legend-text { color: #666; font-size: 12px; }
+        .legend-box {
+            width: 15px;
+            height: 15px;
+            border-radius: 2px;
+        }
+        .stats-summary {
+            display: flex;
+            justify-content: center;
+            gap: 40px;
+            margin: 30px 0;
+        }
+        .stat-item {
+            text-align: center;
+        }
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: bold;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .stat-label {
+            color: #888;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <h1>⌨️ Typtel Statistics</h1>
+    <p class="subtitle">Last %d days of typing activity</p>
+
+    <div class="stats-summary">
+        <div class="stat-item">
+            <div class="stat-value">%s</div>
+            <div class="stat-label">Total Keystrokes</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value">~%s</div>
+            <div class="stat-label">Estimated Words</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value">%s</div>
+            <div class="stat-label">Daily Average</div>
+        </div>
+    </div>
+
+    <div class="charts-container">
+        <div class="chart-box">
+            <h2>📊 Keystrokes per Day</h2>
+            <canvas id="keystrokesChart"></canvas>
+        </div>
+        <div class="chart-box">
+            <h2>📝 Words per Day (estimated)</h2>
+            <canvas id="wordsChart"></canvas>
+        </div>
+    </div>
+
+    <div class="heatmap-container">
+        <div class="heatmap-box">
+            <h2>🔥 Activity Heatmap (Hourly)</h2>
+            <div class="hour-labels">
+                %s
+            </div>
+            <div class="heatmap">
+                %s
+            </div>
+            <div class="legend">
+                <span class="legend-text">Less</span>
+                <div class="legend-box" style="background: #1a1a2e;"></div>
+                <div class="legend-box" style="background: #2d4a3e;"></div>
+                <div class="legend-box" style="background: #3d6b4f;"></div>
+                <div class="legend-box" style="background: #5a9a6f;"></div>
+                <div class="legend-box" style="background: #7bc96f;"></div>
+                <span class="legend-text">More</span>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const chartConfig = {
+            responsive: true,
+            plugins: {
+                legend: { display: false }
+            },
+            scales: {
+                y: {
+                    beginAtZero: true,
+                    grid: { color: 'rgba(255,255,255,0.1)' },
+                    ticks: { color: '#888' }
+                },
+                x: {
+                    grid: { display: false },
+                    ticks: { color: '#888' }
+                }
+            }
+        };
+
+        new Chart(document.getElementById('keystrokesChart'), {
+            type: 'bar',
+            data: {
+                labels: [%s],
+                datasets: [{
+                    data: [%s],
+                    backgroundColor: 'rgba(0, 210, 255, 0.6)',
+                    borderColor: 'rgba(0, 210, 255, 1)',
+                    borderWidth: 1,
+                    borderRadius: 4
+                }]
+            },
+            options: chartConfig
+        });
+
+        new Chart(document.getElementById('wordsChart'), {
+            type: 'line',
+            data: {
+                labels: [%s],
+                datasets: [{
+                    data: [%s],
+                    borderColor: 'rgba(122, 201, 111, 1)',
+                    backgroundColor: 'rgba(122, 201, 111, 0.2)',
+                    fill: true,
+                    tension: 0.4,
+                    pointRadius: 4,
+                    pointBackgroundColor: 'rgba(122, 201, 111, 1)'
+                }]
+            },
+            options: chartConfig
+        });
+    </script>
+</body>
+</html>`,
+		days,
+		formatNumber(calculateTotal(histStats)),
+		formatNumber(calculateTotal(histStats)/5),
+		formatNumber(calculateTotal(histStats)/int64(days)),
+		generateHourLabels(),
+		heatmapHTML,
+		strings.Join(labels, ","),
+		strings.Join(keystrokeData, ","),
+		strings.Join(labels, ","),
+		strings.Join(wordData, ","),
+	)
+
+	// Write to temp file
+	dataDir, err := getLogDir()
+	if err != nil {
+		return "", err
+	}
+	htmlPath := filepath.Join(dataDir, "charts.html")
+	if err := os.WriteFile(htmlPath, []byte(html), 0644); err != nil {
+		return "", err
+	}
+
+	return htmlPath, nil
+}
+
+func generateHourLabels() string {
+	var labels []string
+	for h := 0; h < 24; h++ {
+		if h%3 == 0 {
+			labels = append(labels, fmt.Sprintf(`<div class="hour-label">%d</div>`, h))
+		} else {
+			labels = append(labels, `<div class="hour-label"></div>`)
+		}
+	}
+	return strings.Join(labels, "\n                ")
+}
+
+func generateHeatmapHTML(hourlyData map[string][]HourlyStats, days int) string {
+	// Find max value for color scaling
+	var maxVal int64 = 1
+	for _, hours := range hourlyData {
+		for _, h := range hours {
+			if h.Keystrokes > maxVal {
+				maxVal = h.Keystrokes
+			}
+		}
+	}
+
+	// Sort dates
+	dates := make([]string, 0, len(hourlyData))
+	for date := range hourlyData {
+		dates = append(dates, date)
+	}
+	sort.Strings(dates)
+
+	var rows []string
+	for _, date := range dates {
+		hours := hourlyData[date]
+		t, _ := time.Parse("2006-01-02", date)
+		dateLabel := t.Format("Mon Jan 2")
+
+		var cells []string
+		for _, h := range hours {
+			color := getHeatmapColor(h.Keystrokes, maxVal)
+			title := fmt.Sprintf("%s %d:00 - %d keystrokes", dateLabel, h.Hour, h.Keystrokes)
+			cells = append(cells, fmt.Sprintf(
+				`<div class="heatmap-cell" style="background: %s;" title="%s"></div>`,
+				color, title,
+			))
+		}
+
+		rows = append(rows, fmt.Sprintf(
+			`<div class="heatmap-row"><div class="heatmap-label">%s</div>%s</div>`,
+			dateLabel,
+			strings.Join(cells, ""),
+		))
+	}
+
+	return strings.Join(rows, "\n                ")
+}
+
+func getHeatmapColor(value, max int64) string {
+	if value == 0 {
+		return "#1a1a2e"
+	}
+	ratio := float64(value) / float64(max)
+	if ratio < 0.25 {
+		return "#2d4a3e"
+	} else if ratio < 0.5 {
+		return "#3d6b4f"
+	} else if ratio < 0.75 {
+		return "#5a9a6f"
+	}
+	return "#7bc96f"
+}
+
+func calculateTotal(stats []storage.DailyStats) int64 {
+	var total int64
+	for _, s := range stats {
+		total += s.Keystrokes
+	}
+	return total
+}
+
+type HourlyStats = storage.HourlyStats
