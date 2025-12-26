@@ -1,4 +1,4 @@
-.PHONY: all build clean install uninstall test deps
+.PHONY: all build clean install uninstall test deps start stop
 
 BINARY_NAME=typtel
 MENUBAR_NAME=typtel-menubar
@@ -42,7 +42,17 @@ install: build
 	@echo "Installing LaunchAgent..."
 	@mkdir -p ~/Library/LaunchAgents
 	@sed 's|BINARY_PATH|$(PREFIX)/bin/$(MENUBAR_NAME)|g' scripts/com.typtel.menubar.plist > ~/Library/LaunchAgents/com.typtel.menubar.plist
-	@echo "Done! Run 'typtel' to see stats or 'launchctl load ~/Library/LaunchAgents/com.typtel.menubar.plist' to start menu bar app"
+	@echo ""
+	@echo "Done! To start the menu bar app (run WITHOUT sudo):"
+	@echo "  launchctl load ~/Library/LaunchAgents/com.typtel.menubar.plist"
+	@echo ""
+	@echo "Run 'typtel' to see stats in terminal."
+
+start:
+	@launchctl load ~/Library/LaunchAgents/com.typtel.menubar.plist
+
+stop:
+	@launchctl unload ~/Library/LaunchAgents/com.typtel.menubar.plist
 
 uninstall:
 	@echo "Uninstalling..."
