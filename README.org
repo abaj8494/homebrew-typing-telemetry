@@ -9,6 +9,7 @@
 
 - *Keystroke Counting*: Tracks every keypress, not just completed words
 - *Menu Bar Integration*: Shows daily count in macOS menu bar (Bartender compatible)
+- *Typing Speed Test*: Built-in WPM test with custom word lists
 - *BubbleTea TUI*: Beautiful terminal interface for viewing stats
 - *Hourly & Weekly Graphs*: Visualize your typing patterns
 - *SQLite Storage*: Persistent local storage of all metrics
@@ -25,11 +26,12 @@ make build
 make install
 #+end_src
 
-** Via Homebrew (coming soon)
+** Via Homebrew
 
 #+begin_src shell
-brew tap aayushbajaj/tap
-brew install typtel
+brew tap aayushbajaj/typing-telemetry
+brew install typing-telemetry
+brew services start typing-telemetry
 #+end_src
 
 * Setup
@@ -48,12 +50,14 @@ brew install typtel
 ** Starting the Menu Bar App
 
 #+begin_src shell
-# Start manually
+# If installed via Homebrew
+brew services start typing-telemetry
+
+# Or start manually
 typtel-menubar
 
 # Or load as LaunchAgent (auto-start on login)
-cp ~/Library/LaunchAgents/com.typtel.menubar.plist ~/Library/LaunchAgents/
-launchctl load ~/Library/LaunchAgents/com.typtel.menubar.plist
+make start
 #+end_src
 
 * Usage
@@ -69,6 +73,15 @@ typtel stats
 
 # Get today's keystroke count (for scripts/menu bar)
 typtel today
+
+# Start a typing speed test
+typtel test
+
+# Typing test with custom word count
+typtel test -w 50
+
+# Typing test with custom word list
+typtel test -f words.txt
 #+end_src
 
 ** TUI Controls
