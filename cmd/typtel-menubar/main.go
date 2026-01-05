@@ -241,7 +241,7 @@ func updateMenuBarTitle() {
 	})
 }
 
-const Version = "0.8.6"
+const Version = "0.8.7"
 
 func menuItems() []menuet.MenuItem {
 	stats, _ := store.GetTodayStats()
@@ -1131,9 +1131,9 @@ func generateChartsHTML(days int) (string, error) {
 		formatAbsolute(totalWords),
 		formatAbsolute(totalKeystrokes/int64(days)),
 		formatDistance(totalMouseDistance),
+		unitLabel,
 		generateHourLabels(),
 		heatmapHTML,
-		unitLabel,
 		strings.Join(labels, ","),
 		strings.Join(keystrokeData, ","),
 		strings.Join(labels, ","),

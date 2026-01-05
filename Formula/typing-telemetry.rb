@@ -1,11 +1,11 @@
 class TypingTelemetry < Formula
   desc "Keystroke and mouse telemetry for developers - track your daily typing and mouse movement"
   homepage "https://github.com/abaj8494/typing-telemetry"
-  version "0.8.6"
+  version "0.8.7"
   license "MIT"
 
   # Install from GitHub repository
-  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.8.6"
+  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.8.7"
   head "https://github.com/abaj8494/typing-telemetry.git", branch: "main"
 
   depends_on :macos
@@ -32,8 +32,8 @@ class TypingTelemetry < Formula
     (app_contents/"MacOS").mkpath
     (app_contents/"Resources").mkpath
 
-    # Symlink binary into app bundle (shares permissions with bin/)
-    (app_contents/"MacOS/typtel-menubar").make_symlink(bin/"typtel-menubar")
+    # Copy binary into app bundle (symlinks don't work well with macOS permissions)
+    cp bin/"typtel-menubar", app_contents/"MacOS/typtel-menubar"
 
     # Copy icon if it exists
     icon_path = buildpath/"assets/AppIcon.icns"
