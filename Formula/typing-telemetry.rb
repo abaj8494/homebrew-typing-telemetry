@@ -1,11 +1,11 @@
 class TypingTelemetry < Formula
   desc "Keystroke and mouse telemetry for developers - track your daily typing and mouse movement"
   homepage "https://github.com/abaj8494/typing-telemetry"
-  version "0.8.7"
+  version "0.8.8"
   license "MIT"
 
   # Install from GitHub repository
-  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.8.7"
+  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.8.8"
   head "https://github.com/abaj8494/typing-telemetry.git", branch: "main"
 
   depends_on :macos
@@ -75,9 +75,9 @@ class TypingTelemetry < Formula
   end
 
   # Use Homebrew's service block for LaunchAgent management
-  # Run from app bundle (symlinks to bin/, so permissions are shared)
+  # Run from bin/ - user must grant accessibility to this path after each upgrade
   service do
-    run [opt_prefix/"Typtel.app/Contents/MacOS/typtel-menubar"]
+    run [opt_bin/"typtel-menubar"]
     keep_alive true
     process_type :interactive
     log_path var/"log/typtel-menubar.log"
@@ -89,20 +89,18 @@ class TypingTelemetry < Formula
     <<~EOS
       Typtel v#{version} installed!
 
-      FIRST TIME SETUP (run once):
-        ln -sf #{opt_prefix}/Typtel.app ~/Applications/Typtel.app
-
-      GRANT ACCESSIBILITY PERMISSIONS:
+      SETUP (required after each upgrade):
         1. Open System Settings > Privacy & Security > Accessibility
         2. Click + and press Cmd+Shift+G
-        3. Paste: ~/Applications/Typtel.app
-        4. Enable the checkbox for Typtel
+        3. Paste: #{opt_bin}/typtel-menubar
+        4. Enable the checkbox
 
       START THE SERVICE:
         brew services start typing-telemetry
 
-      You can also launch Typtel from Spotlight (Cmd+Space, type "Typtel")
-      to restart the menubar if it disappears.
+      OPTIONAL - Spotlight access:
+        ln -sf #{opt_prefix}/Typtel.app ~/Applications/Typtel.app
+        Then add ~/Applications/Typtel.app to Accessibility too.
 
       COMMANDS:
         typtel           - Interactive dashboard
@@ -114,6 +112,9 @@ class TypingTelemetry < Formula
         brew services start typing-telemetry
         brew services stop typing-telemetry
         brew services restart typing-telemetry
+
+      NOTE: Accessibility permissions are tied to binary paths.
+      You must re-grant after each upgrade until Apple improves this.
     EOS
   end
 
