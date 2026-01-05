@@ -10,6 +10,7 @@ package mousetracker
 #include <ApplicationServices/ApplicationServices.h>
 
 extern void goMouseCallback(double x, double y);
+extern void goMouseClickCallback();
 
 static CGEventRef mouseEventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
     // Handle mouse moved and drag events
@@ -20,15 +21,24 @@ static CGEventRef mouseEventCallback(CGEventTapProxy proxy, CGEventType type, CG
         CGPoint location = CGEventGetLocation(event);
         goMouseCallback(location.x, location.y);
     }
+    // Handle mouse clicks (down events only to avoid double-counting)
+    if (type == kCGEventLeftMouseDown ||
+        type == kCGEventRightMouseDown ||
+        type == kCGEventOtherMouseDown) {
+        goMouseClickCallback();
+    }
     return event;
 }
 
 static CFMachPortRef createMouseEventTap() {
-    // Listen for mouse movement and drag events
+    // Listen for mouse movement, drag events, and clicks
     CGEventMask eventMask = CGEventMaskBit(kCGEventMouseMoved) |
                             CGEventMaskBit(kCGEventLeftMouseDragged) |
                             CGEventMaskBit(kCGEventRightMouseDragged) |
-                            CGEventMaskBit(kCGEventOtherMouseDragged);
+                            CGEventMaskBit(kCGEventOtherMouseDragged) |
+                            CGEventMaskBit(kCGEventLeftMouseDown) |
+                            CGEventMaskBit(kCGEventRightMouseDown) |
+                            CGEventMaskBit(kCGEventOtherMouseDown);
 
     CFMachPortRef eventTap = CGEventTapCreate(
         kCGSessionEventTap,
@@ -85,8 +95,12 @@ type MouseMovement struct {
 	Distance float64 // Euclidean distance from last position
 }
 
+// MouseClick represents a mouse click event
+type MouseClick struct{}
+
 var (
 	mouseChan     chan MouseMovement
+	clickChan     chan MouseClick
 	mu            sync.Mutex
 	running       bool
 	lastX, lastY  float64
@@ -128,6 +142,20 @@ func goMouseCallback(x, y C.double) {
 	}
 }
 
+//export goMouseClickCallback
+func goMouseClickCallback() {
+	mu.Lock()
+	defer mu.Unlock()
+
+	if clickChan != nil {
+		select {
+		case clickChan <- MouseClick{}:
+		default:
+			// Channel full, drop event
+		}
+	}
+}
+
 // CheckAccessibilityPermissions returns true if the app has accessibility permissions
 func CheckAccessibilityPermissions() bool {
 	return C.checkMouseAccessibilityPermissions() != 0
@@ -140,20 +168,21 @@ func GetCurrentPosition() MousePosition {
 	return MousePosition{X: float64(x), Y: float64(y)}
 }
 
-// Start begins capturing mouse movements and returns a channel that receives movement events
-func Start() (<-chan MouseMovement, error) {
+// Start begins capturing mouse movements and clicks, returns channels for both
+func Start() (<-chan MouseMovement, <-chan MouseClick, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
 	if running {
-		return nil, errors.New("mouse tracker already running")
+		return nil, nil, errors.New("mouse tracker already running")
 	}
 
 	if !CheckAccessibilityPermissions() {
-		return nil, errors.New("accessibility permissions not granted - please enable in System Preferences > Privacy & Security > Accessibility")
+		return nil, nil, errors.New("accessibility permissions not granted - please enable in System Preferences > Privacy & Security > Accessibility")
 	}
 
 	mouseChan = make(chan MouseMovement, 1000)
+	clickChan = make(chan MouseClick, 1000)
 
 	// Get initial position
 	pos := GetCurrentPosition()
@@ -172,7 +201,7 @@ func Start() (<-chan MouseMovement, error) {
 		C.runMouseEventLoop(eventTap)
 	}()
 
-	return mouseChan, nil
+	return mouseChan, clickChan, nil
 }
 
 // Stop stops the mouse tracker
@@ -182,6 +211,10 @@ func Stop() {
 	if mouseChan != nil {
 		close(mouseChan)
 		mouseChan = nil
+	}
+	if clickChan != nil {
+		close(clickChan)
+		clickChan = nil
 	}
 	running = false
 	initialized = false
