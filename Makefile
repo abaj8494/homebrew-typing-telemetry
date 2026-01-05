@@ -1,9 +1,10 @@
-.PHONY: all build clean install uninstall test deps start stop
+.PHONY: all build clean install uninstall test deps start stop app install-app install-app-user start-app stop-app uninstall-app
 
 BINARY_NAME=typtel
 MENUBAR_NAME=typtel-menubar
 DAEMON_NAME=typtel-daemon
-VERSION?=0.3.0
+APP_NAME=Typtel.app
+VERSION?=0.7.0
 BUILD_DIR=build
 PREFIX?=/usr/local
 
@@ -84,3 +85,62 @@ run-menubar: build-menubar
 
 run-daemon: build-daemon
 	./$(BUILD_DIR)/$(DAEMON_NAME)
+
+# Build macOS .app bundle (openable from Finder/Spotlight)
+app: build-menubar
+	@echo "Building $(APP_NAME)..."
+	@mkdir -p $(BUILD_DIR)/$(APP_NAME)/Contents/MacOS
+	@mkdir -p $(BUILD_DIR)/$(APP_NAME)/Contents/Resources
+	@cp $(BUILD_DIR)/$(MENUBAR_NAME) $(BUILD_DIR)/$(APP_NAME)/Contents/MacOS/
+	@sed 's/0.7.0/$(VERSION)/g' scripts/Info.plist > $(BUILD_DIR)/$(APP_NAME)/Contents/Info.plist
+	@echo "Built $(BUILD_DIR)/$(APP_NAME)"
+
+# Install app to /Applications (requires sudo for system-wide, or use ~/Applications)
+install-app: app
+	@echo "Installing $(APP_NAME) to /Applications..."
+	@rm -rf /Applications/$(APP_NAME)
+	@cp -R $(BUILD_DIR)/$(APP_NAME) /Applications/
+	@echo "Done! Typtel is now available in Finder and Spotlight."
+	@echo ""
+	@echo "IMPORTANT: Grant Accessibility permissions to Typtel in:"
+	@echo "  System Settings > Privacy & Security > Accessibility"
+
+# Install app to ~/Applications (no sudo required)
+install-app-user: app
+	@echo "Installing $(APP_NAME) to ~/Applications..."
+	@mkdir -p ~/Applications
+	@rm -rf ~/Applications/$(APP_NAME)
+	@cp -R $(BUILD_DIR)/$(APP_NAME) ~/Applications/
+	@echo "Installing LaunchAgent for auto-start..."
+	@mkdir -p ~/Library/LaunchAgents
+	@launchctl unload ~/Library/LaunchAgents/com.typtel.menubar.plist 2>/dev/null || true
+	@sed 's|APP_BINARY_PATH|$(HOME)/Applications/$(APP_NAME)/Contents/MacOS/$(MENUBAR_NAME)|g' scripts/com.typtel.app.plist > ~/Library/LaunchAgents/com.typtel.menubar.plist
+	@echo ""
+	@echo "Done! Typtel is now available in Finder and Spotlight."
+	@echo ""
+	@echo "To start now: make start-app"
+	@echo ""
+	@echo "IMPORTANT: Grant Accessibility permissions to Typtel.app in:"
+	@echo "  System Settings > Privacy & Security > Accessibility"
+	@echo ""
+	@echo "This is the ONLY app you need to grant permissions to."
+
+# Start the app via LaunchAgent
+start-app:
+	@launchctl unload ~/Library/LaunchAgents/com.typtel.menubar.plist 2>/dev/null || true
+	@launchctl load ~/Library/LaunchAgents/com.typtel.menubar.plist
+	@echo "Started Typtel. Check your menu bar!"
+
+# Stop the app
+stop-app:
+	@launchctl unload ~/Library/LaunchAgents/com.typtel.menubar.plist 2>/dev/null || true
+	@echo "Stopped Typtel."
+
+# Uninstall the app completely
+uninstall-app:
+	@echo "Uninstalling Typtel..."
+	@launchctl unload ~/Library/LaunchAgents/com.typtel.menubar.plist 2>/dev/null || true
+	@rm -f ~/Library/LaunchAgents/com.typtel.menubar.plist
+	@rm -rf ~/Applications/$(APP_NAME)
+	@rm -rf /Applications/$(APP_NAME)
+	@echo "Done!"

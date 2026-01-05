@@ -35,6 +35,7 @@ type MouseDailyStats struct {
 	CurrentY       float64 // Current mouse Y position
 	MAEFromOrigin  float64 // Mean Absolute Error from midnight position
 	MovementCount  int64   // Number of movement events recorded
+	ClickCount     int64   // Number of mouse clicks
 }
 
 // MouseLeaderboardEntry represents a day in the "least mouse movement" leaderboard
@@ -109,13 +110,26 @@ func initSchema(db *sql.DB) error {
 		current_y REAL DEFAULT 0,
 		sum_abs_error REAL DEFAULT 0,
 		movement_count INTEGER DEFAULT 0,
+		click_count INTEGER DEFAULT 0,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_mouse_daily_distance ON mouse_daily(total_distance);
+
+	CREATE TABLE IF NOT EXISTS settings (
+		key TEXT PRIMARY KEY,
+		value TEXT
+	);
 	`
 	_, err := db.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Add click_count column if it doesn't exist (migration for existing DBs)
+	_, _ = db.Exec("ALTER TABLE mouse_daily ADD COLUMN click_count INTEGER DEFAULT 0")
+
+	return nil
 }
 
 func (s *Store) RecordKeystroke(keycode int) error {
@@ -340,10 +354,10 @@ func (s *Store) GetMouseDailyStats(date string) (*MouseDailyStats, error) {
 	err := s.db.QueryRow(`
 		SELECT COALESCE(total_distance, 0), COALESCE(midnight_x, 0), COALESCE(midnight_y, 0),
 		       COALESCE(current_x, 0), COALESCE(current_y, 0), COALESCE(sum_abs_error, 0),
-		       COALESCE(movement_count, 0)
+		       COALESCE(movement_count, 0), COALESCE(click_count, 0)
 		FROM mouse_daily WHERE date = ?
 	`, date).Scan(&stats.TotalDistance, &stats.MidnightX, &stats.MidnightY,
-		&stats.CurrentX, &stats.CurrentY, &stats.MAEFromOrigin, &stats.MovementCount)
+		&stats.CurrentX, &stats.CurrentY, &stats.MAEFromOrigin, &stats.MovementCount, &stats.ClickCount)
 
 	if err == sql.ErrNoRows {
 		return &MouseDailyStats{Date: date}, nil
@@ -358,6 +372,20 @@ func (s *Store) GetMouseDailyStats(date string) (*MouseDailyStats, error) {
 	}
 
 	return &stats, nil
+}
+
+// RecordMouseClick records a mouse click event
+func (s *Store) RecordMouseClick() error {
+	now := time.Now()
+	date := now.Format("2006-01-02")
+
+	_, err := s.db.Exec(`
+		INSERT INTO mouse_daily (date, click_count) VALUES (?, 1)
+		ON CONFLICT(date) DO UPDATE SET
+			click_count = click_count + 1,
+			updated_at = CURRENT_TIMESTAMP
+	`, date)
+	return err
 }
 
 // GetTodayMouseStats returns today's mouse movement stats
@@ -423,4 +451,92 @@ func abs(x float64) float64 {
 		return -x
 	}
 	return x
+}
+
+// Settings keys
+const (
+	SettingShowKeystrokes = "menubar_show_keystrokes"
+	SettingShowWords      = "menubar_show_words"
+	SettingShowClicks     = "menubar_show_clicks"
+	SettingShowDistance   = "menubar_show_distance"
+)
+
+// MenubarSettings represents what to show in the menubar
+type MenubarSettings struct {
+	ShowKeystrokes bool
+	ShowWords      bool
+	ShowClicks     bool
+	ShowDistance   bool
+}
+
+// GetSetting retrieves a setting value
+func (s *Store) GetSetting(key string) (string, error) {
+	var value string
+	err := s.db.QueryRow("SELECT value FROM settings WHERE key = ?", key).Scan(&value)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	return value, err
+}
+
+// SetSetting saves a setting value
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`
+		INSERT INTO settings (key, value) VALUES (?, ?)
+		ON CONFLICT(key) DO UPDATE SET value = ?
+	`, key, value, value)
+	return err
+}
+
+// GetMenubarSettings returns the current menubar display settings
+func (s *Store) GetMenubarSettings() MenubarSettings {
+	settings := MenubarSettings{
+		ShowKeystrokes: true, // default on
+		ShowWords:      true, // default on
+		ShowClicks:     false, // default off
+		ShowDistance:   false, // default off (per user request)
+	}
+
+	if val, _ := s.GetSetting(SettingShowKeystrokes); val == "false" {
+		settings.ShowKeystrokes = false
+	} else if val == "true" {
+		settings.ShowKeystrokes = true
+	}
+
+	if val, _ := s.GetSetting(SettingShowWords); val == "false" {
+		settings.ShowWords = false
+	} else if val == "true" {
+		settings.ShowWords = true
+	}
+
+	if val, _ := s.GetSetting(SettingShowClicks); val == "true" {
+		settings.ShowClicks = true
+	}
+
+	if val, _ := s.GetSetting(SettingShowDistance); val == "true" {
+		settings.ShowDistance = true
+	}
+
+	return settings
+}
+
+// SaveMenubarSettings saves the menubar display settings
+func (s *Store) SaveMenubarSettings(settings MenubarSettings) error {
+	if err := s.SetSetting(SettingShowKeystrokes, boolToString(settings.ShowKeystrokes)); err != nil {
+		return err
+	}
+	if err := s.SetSetting(SettingShowWords, boolToString(settings.ShowWords)); err != nil {
+		return err
+	}
+	if err := s.SetSetting(SettingShowClicks, boolToString(settings.ShowClicks)); err != nil {
+		return err
+	}
+	return s.SetSetting(SettingShowDistance, boolToString(settings.ShowDistance))
+}
+
+func boolToString(b bool) string {
+	if b {
+		return "true"
+	}
+	return "false"
 }

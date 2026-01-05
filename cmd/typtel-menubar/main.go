@@ -112,7 +112,7 @@ func main() {
 	}()
 
 	// Start mouse tracker in background (uses same accessibility permissions)
-	mouseChan, err := mousetracker.Start()
+	mouseChan, clickChan, err := mousetracker.Start()
 	if err != nil {
 		log.Printf("Warning: Failed to start mouse tracker: %v", err)
 		// Continue without mouse tracking - keylogger is more important
@@ -142,6 +142,15 @@ func main() {
 
 				if err := store.RecordMouseMovement(movement.X, movement.Y, movement.Distance); err != nil {
 					log.Printf("Failed to record mouse movement: %v", err)
+				}
+			}
+		}()
+
+		// Process mouse clicks in background
+		go func() {
+			for range clickChan {
+				if err := store.RecordMouseClick(); err != nil {
+					log.Printf("Failed to record mouse click: %v", err)
 				}
 			}
 		}()
@@ -195,21 +204,39 @@ func updateMenuBarTitle() {
 		return
 	}
 
-	// Get mouse stats too
+	// Get settings
+	settings := store.GetMenubarSettings()
+
+	// Get mouse stats
 	mouseStats, _ := store.GetTodayMouseStats()
-	mouseDistance := ""
-	if mouseStats != nil && mouseStats.TotalDistance > 0 {
-		mouseDistance = fmt.Sprintf(" | 🖱️%s", formatDistance(mouseStats.TotalDistance))
+
+	// Build title based on settings
+	var parts []string
+
+	if settings.ShowKeystrokes {
+		parts = append(parts, fmt.Sprintf("⌨️%s", formatAbsolute(stats.Keystrokes)))
+	}
+	if settings.ShowWords {
+		parts = append(parts, fmt.Sprintf("%sw", formatAbsolute(stats.Words)))
+	}
+	if settings.ShowClicks && mouseStats != nil {
+		parts = append(parts, fmt.Sprintf("🖱️%s", formatAbsolute(mouseStats.ClickCount)))
+	}
+	if settings.ShowDistance && mouseStats != nil && mouseStats.TotalDistance > 0 {
+		parts = append(parts, formatDistance(mouseStats.TotalDistance))
 	}
 
-	// Use actual tracked word count instead of estimation
-	title := fmt.Sprintf("⌨️ %s | %sw%s", formatAbsolute(stats.Keystrokes), formatAbsolute(stats.Words), mouseDistance)
+	title := "⌨️"
+	if len(parts) > 0 {
+		title = strings.Join(parts, " | ")
+	}
+
 	menuet.App().SetMenuState(&menuet.MenuState{
 		Title: title,
 	})
 }
 
-const Version = "0.6.0"
+const Version = "0.7.0"
 
 func menuItems() []menuet.MenuItem {
 	stats, _ := store.GetTodayStats()
@@ -219,6 +246,7 @@ func menuItems() []menuet.MenuItem {
 
 	var weekKeystrokes, weekWords int64
 	var weekMouseDistance float64
+	var weekClicks int64
 	if weekStats != nil {
 		for _, day := range weekStats {
 			weekKeystrokes += day.Keystrokes
@@ -228,6 +256,7 @@ func menuItems() []menuet.MenuItem {
 	if weekMouseStats != nil {
 		for _, day := range weekMouseStats {
 			weekMouseDistance += day.TotalDistance
+			weekClicks += day.ClickCount
 		}
 	}
 
@@ -239,8 +268,10 @@ func menuItems() []menuet.MenuItem {
 	}
 
 	todayMouseDistance := float64(0)
+	todayClicks := int64(0)
 	if mouseStats != nil {
 		todayMouseDistance = mouseStats.TotalDistance
+		todayClicks = mouseStats.ClickCount
 	}
 
 	return []menuet.MenuItem{
@@ -248,7 +279,7 @@ func menuItems() []menuet.MenuItem {
 			Text: fmt.Sprintf("Today: %s keystrokes (%s words)", formatAbsolute(keystrokeCount), formatAbsolute(todayWords)),
 		},
 		{
-			Text: fmt.Sprintf("Today: 🖱️ %s mouse distance", formatDistance(todayMouseDistance)),
+			Text: fmt.Sprintf("Today: 🖱️ %s clicks, %s distance", formatAbsolute(todayClicks), formatDistance(todayMouseDistance)),
 		},
 		{
 			Type: menuet.Separator,
@@ -257,7 +288,7 @@ func menuItems() []menuet.MenuItem {
 			Text: fmt.Sprintf("This Week: %s keystrokes (%s words)", formatAbsolute(weekKeystrokes), formatAbsolute(weekWords)),
 		},
 		{
-			Text: fmt.Sprintf("This Week: 🖱️ %s mouse distance", formatDistance(weekMouseDistance)),
+			Text: fmt.Sprintf("This Week: 🖱️ %s clicks, %s distance", formatAbsolute(weekClicks), formatDistance(weekMouseDistance)),
 		},
 		{
 			Type: menuet.Separator,
@@ -274,6 +305,10 @@ func menuItems() []menuet.MenuItem {
 		},
 		{
 			Type: menuet.Separator,
+		},
+		{
+			Text:     "⚙️ Settings",
+			Children: settingsMenuItems,
 		},
 		{
 			Text:    "About",
@@ -364,32 +399,32 @@ func formatAbsolute(n int64) string {
 	return result
 }
 
-// formatDistance formats mouse distance in a human-readable way
+// formatDistance formats mouse distance in a human-readable way (feet)
 // Pixels are converted to approximate real-world units assuming ~100 DPI
 func formatDistance(pixels float64) string {
-	// Convert pixels to meters (assuming ~100 DPI, 1 inch = 2.54 cm)
-	// 100 pixels = 1 inch = 2.54 cm = 0.0254 m
-	meters := pixels * 0.000254
+	// Convert pixels to feet (assuming ~100 DPI, 1 inch = 100 pixels)
+	// 100 pixels = 1 inch, 12 inches = 1 foot
+	feet := pixels / 100.0 / 12.0
 
-	if meters >= 1000 {
-		return fmt.Sprintf("%.1fkm", meters/1000)
-	} else if meters >= 1 {
-		return fmt.Sprintf("%.0fm", meters)
-	} else if meters >= 0.01 {
-		return fmt.Sprintf("%.0fcm", meters*100)
+	if feet >= 5280 { // 1 mile = 5280 feet
+		return fmt.Sprintf("%.1fmi", feet/5280)
+	} else if feet >= 1 {
+		return fmt.Sprintf("%.0fft", feet)
+	} else {
+		inches := feet * 12
+		return fmt.Sprintf("%.0fin", inches)
 	}
-	return fmt.Sprintf("%.0fpx", pixels)
 }
 
 // formatDistanceShort formats mouse distance for compact display
 func formatDistanceShort(pixels float64) string {
-	meters := pixels * 0.000254
-	if meters >= 1000 {
-		return fmt.Sprintf("%.1fkm", meters/1000)
-	} else if meters >= 1 {
-		return fmt.Sprintf("%.0fm", meters)
+	feet := pixels / 100.0 / 12.0
+	if feet >= 5280 {
+		return fmt.Sprintf("%.1fmi", feet/5280)
+	} else if feet >= 1 {
+		return fmt.Sprintf("%.0fft", feet)
 	}
-	return fmt.Sprintf("%.0fcm", meters*100)
+	return fmt.Sprintf("%.0fin", feet*12)
 }
 
 func chartMenuItems() []menuet.MenuItem {
@@ -401,6 +436,59 @@ func chartMenuItems() []menuet.MenuItem {
 		{
 			Text:    "Monthly Overview",
 			Clicked: func() { openChartsWithDays(30) },
+		},
+	}
+}
+
+func settingsMenuItems() []menuet.MenuItem {
+	settings := store.GetMenubarSettings()
+
+	checkmark := func(enabled bool) string {
+		if enabled {
+			return "✓ "
+		}
+		return "   "
+	}
+
+	return []menuet.MenuItem{
+		{
+			Text: "Menu Bar Display:",
+		},
+		{
+			Text: checkmark(settings.ShowKeystrokes) + "Show Keystrokes",
+			Clicked: func() {
+				s := store.GetMenubarSettings()
+				s.ShowKeystrokes = !s.ShowKeystrokes
+				store.SaveMenubarSettings(s)
+				updateMenuBarTitle()
+			},
+		},
+		{
+			Text: checkmark(settings.ShowWords) + "Show Words",
+			Clicked: func() {
+				s := store.GetMenubarSettings()
+				s.ShowWords = !s.ShowWords
+				store.SaveMenubarSettings(s)
+				updateMenuBarTitle()
+			},
+		},
+		{
+			Text: checkmark(settings.ShowClicks) + "Show Mouse Clicks",
+			Clicked: func() {
+				s := store.GetMenubarSettings()
+				s.ShowClicks = !s.ShowClicks
+				store.SaveMenubarSettings(s)
+				updateMenuBarTitle()
+			},
+		},
+		{
+			Text: checkmark(settings.ShowDistance) + "Show Mouse Distance",
+			Clicked: func() {
+				s := store.GetMenubarSettings()
+				s.ShowDistance = !s.ShowDistance
+				store.SaveMenubarSettings(s)
+				updateMenuBarTitle()
+			},
 		},
 	}
 }
@@ -584,7 +672,7 @@ func generateLeaderboardHTML() (string, error) {
             This leaderboard tracks the days when you moved your mouse the least. Less mouse movement
             could indicate focused keyboard work, reading, or meditation sessions. The distance is
             calculated as the total Euclidean distance your cursor traveled throughout the day,
-            converted to approximate real-world measurements (assuming ~100 DPI display).
+            converted to approximate real-world measurements in feet (assuming ~100 DPI display).
         </div>
     </div>
 </body>
@@ -654,10 +742,10 @@ func generateChartsHTML(days int) (string, error) {
 		totalKeystrokes += stat.Keystrokes
 		totalWords += stat.Words
 
-		// Add mouse data (convert to meters for chart)
+		// Add mouse data (convert to feet for chart)
 		if i < len(mouseStats) {
-			meters := mouseStats[i].TotalDistance * 0.000254
-			mouseData = append(mouseData, fmt.Sprintf("%.2f", meters))
+			feet := mouseStats[i].TotalDistance / 100.0 / 12.0
+			mouseData = append(mouseData, fmt.Sprintf("%.1f", feet))
 			totalMouseDistance += mouseStats[i].TotalDistance
 		} else {
 			mouseData = append(mouseData, "0")
@@ -839,7 +927,7 @@ func generateChartsHTML(days int) (string, error) {
 
     <div class="charts-container">
         <div class="chart-box" style="grid-column: span 2;">
-            <h2>🖱️ Mouse Distance per Day (meters)</h2>
+            <h2>🖱️ Mouse Distance per Day (feet)</h2>
             <canvas id="mouseChart"></canvas>
         </div>
     </div>
