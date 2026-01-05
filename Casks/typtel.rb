@@ -10,6 +10,13 @@ cask "typtel" do
   # Install the app to /Applications
   app "Typtel.app"
 
+  # Remove quarantine to prevent "app is damaged" error (unsigned app)
+  postflight do
+    system_command "/usr/bin/xattr",
+                   args: ["-cr", "#{appdir}/Typtel.app"],
+                   sudo: false
+  end
+
   # Symlink CLI to /usr/local/bin
   binary "Typtel.app/Contents/MacOS/typtel"
 
