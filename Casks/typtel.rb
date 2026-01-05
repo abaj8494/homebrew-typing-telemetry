@@ -1,8 +1,8 @@
 cask "typtel" do
   version "0.9.0"
-  sha256 :no_check  # Updated automatically after first release
+  sha256 "75f4651eb6862099d641abed4f9111758b5e3b741c0155fe167cf6f0aa90d3b9"
 
-  url "https://github.com/abaj8494/typing-telemetry/releases/download/v#{version}/Typtel-#{version}.zip"
+  url "https://github.com/abaj8494/homebrew-typing-telemetry/releases/download/v#{version}/Typtel-#{version}.zip"
   name "Typtel"
   desc "Keystroke and mouse telemetry for developers"
   homepage "https://github.com/abaj8494/typing-telemetry"
