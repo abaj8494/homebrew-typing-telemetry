@@ -460,6 +460,14 @@ const (
 	SettingShowClicks           = "menubar_show_clicks"
 	SettingShowDistance         = "menubar_show_distance"
 	SettingMouseTrackingEnabled = "mouse_tracking_enabled"
+	SettingDistanceUnit         = "distance_unit"
+)
+
+// Distance unit options
+const (
+	DistanceUnitFeet    = "feet"    // feet/miles (default)
+	DistanceUnitCars    = "cars"    // average car length ~15ft
+	DistanceUnitFrisbee = "frisbee" // ultimate frisbee field ~330ft
 )
 
 // MenubarSettings represents what to show in the menubar
@@ -552,4 +560,18 @@ func (s *Store) IsMouseTrackingEnabled() bool {
 // SetMouseTrackingEnabled sets whether mouse tracking is enabled
 func (s *Store) SetMouseTrackingEnabled(enabled bool) error {
 	return s.SetSetting(SettingMouseTrackingEnabled, boolToString(enabled))
+}
+
+// GetDistanceUnit returns the current distance unit (default: feet)
+func (s *Store) GetDistanceUnit() string {
+	val, _ := s.GetSetting(SettingDistanceUnit)
+	if val == "" {
+		return DistanceUnitFeet
+	}
+	return val
+}
+
+// SetDistanceUnit sets the distance unit
+func (s *Store) SetDistanceUnit(unit string) error {
+	return s.SetSetting(SettingDistanceUnit, unit)
 }

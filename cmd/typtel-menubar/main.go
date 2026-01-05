@@ -241,7 +241,7 @@ func updateMenuBarTitle() {
 	})
 }
 
-const Version = "0.8.0"
+const Version = "0.8.1"
 
 func menuItems() []menuet.MenuItem {
 	stats, _ := store.GetTodayStats()
@@ -404,18 +404,41 @@ func formatAbsolute(n int64) string {
 	return result
 }
 
-// formatDistance formats mouse distance in a human-readable way (feet)
+// formatDistance formats mouse distance based on the selected unit setting
 // Pixels are converted to approximate real-world units assuming ~100 DPI
 func formatDistance(pixels float64) string {
 	// Convert pixels to feet (assuming ~100 DPI, 1 inch = 100 pixels)
 	// 100 pixels = 1 inch, 12 inches = 1 foot
 	feet := pixels / 100.0 / 12.0
 
-	if feet >= 5280 { // 1 mile = 5280 feet
-		return fmt.Sprintf("%.1fmi", feet/5280)
-	} else if feet >= 1 {
-		return fmt.Sprintf("%.0fft", feet)
-	} else {
+	unit := store.GetDistanceUnit()
+	switch unit {
+	case storage.DistanceUnitCars:
+		// Average car length ~15 feet
+		cars := feet / 15.0
+		if cars >= 1000 {
+			return fmt.Sprintf("%.1fk cars", cars/1000)
+		} else if cars >= 1 {
+			return fmt.Sprintf("%.0f cars", cars)
+		}
+		return fmt.Sprintf("%.1f cars", cars)
+
+	case storage.DistanceUnitFrisbee:
+		// Ultimate frisbee field = 110 yards = 330 feet
+		fields := feet / 330.0
+		if fields >= 100 {
+			return fmt.Sprintf("%.0f fields", fields)
+		} else if fields >= 1 {
+			return fmt.Sprintf("%.1f fields", fields)
+		}
+		return fmt.Sprintf("%.2f fields", fields)
+
+	default: // feet/miles
+		if feet >= 5280 { // 1 mile = 5280 feet
+			return fmt.Sprintf("%.1fmi", feet/5280)
+		} else if feet >= 1 {
+			return fmt.Sprintf("%.0fft", feet)
+		}
 		inches := feet * 12
 		return fmt.Sprintf("%.0fin", inches)
 	}
@@ -497,6 +520,10 @@ func settingsMenuItems() []menuet.MenuItem {
 			},
 		},
 		{
+			Text:     "   Distance Unit",
+			Children: distanceUnitMenuItems,
+		},
+		{
 			Type: menuet.Separator,
 		},
 		{
@@ -513,6 +540,42 @@ func settingsMenuItems() []menuet.MenuItem {
 					InformativeText: "Restart the service for changes to take effect:\nbrew services restart typing-telemetry",
 					Buttons:         []string{"OK"},
 				})
+			},
+		},
+	}
+}
+
+// distanceUnitMenuItems returns the distance unit selection submenu
+func distanceUnitMenuItems() []menuet.MenuItem {
+	currentUnit := store.GetDistanceUnit()
+
+	checkmark := func(unit string) string {
+		if currentUnit == unit {
+			return "✓ "
+		}
+		return "   "
+	}
+
+	return []menuet.MenuItem{
+		{
+			Text: checkmark(storage.DistanceUnitFeet) + "Feet / Miles",
+			Clicked: func() {
+				store.SetDistanceUnit(storage.DistanceUnitFeet)
+				updateMenuBarTitle()
+			},
+		},
+		{
+			Text: checkmark(storage.DistanceUnitCars) + "Cars (15ft each)",
+			Clicked: func() {
+				store.SetDistanceUnit(storage.DistanceUnitCars)
+				updateMenuBarTitle()
+			},
+		},
+		{
+			Text: checkmark(storage.DistanceUnitFrisbee) + "Frisbee Fields (330ft)",
+			Clicked: func() {
+				store.SetDistanceUnit(storage.DistanceUnitFrisbee)
+				updateMenuBarTitle()
 			},
 		},
 	}
@@ -931,7 +994,7 @@ func generateChartsHTML(days int) (string, error) {
         </div>
         <div class="stat-item">
             <div class="stat-value">%s</div>
-            <div class="stat-label">Daily Average</div>
+            <div class="stat-label">Avg Keystrokes/Day</div>
         </div>
         <div class="stat-item">
             <div class="stat-value">%s</div>
