@@ -1,11 +1,11 @@
 class TypingTelemetry < Formula
   desc "Keystroke and mouse telemetry for developers - track your daily typing and mouse movement"
   homepage "https://github.com/abaj8494/typing-telemetry"
-  version "0.8.3"
+  version "0.8.4"
   license "MIT"
 
   # Install from GitHub repository
-  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.8.3"
+  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.8.4"
   head "https://github.com/abaj8494/typing-telemetry.git", branch: "main"
 
   depends_on :macos
@@ -32,8 +32,8 @@ class TypingTelemetry < Formula
     (app_contents/"MacOS").mkpath
     (app_contents/"Resources").mkpath
 
-    # Copy binary into app bundle
-    cp bin/"typtel-menubar", app_contents/"MacOS/typtel-menubar"
+    # Symlink binary into app bundle (shares permissions with bin/)
+    (app_contents/"MacOS/typtel-menubar").make_symlink(bin/"typtel-menubar")
 
     # Copy icon if it exists
     icon_path = buildpath/"assets/AppIcon.icns"
@@ -75,9 +75,9 @@ class TypingTelemetry < Formula
   end
 
   # Use Homebrew's service block for LaunchAgent management
-  # Run from opt_bin so accessibility permissions persist across upgrades
+  # Run from app bundle (symlinks to bin/, so permissions are shared)
   service do
-    run [opt_bin/"typtel-menubar"]
+    run [opt_prefix/"Typtel.app/Contents/MacOS/typtel-menubar"]
     keep_alive true
     process_type :interactive
     log_path var/"log/typtel-menubar.log"
@@ -112,9 +112,12 @@ class TypingTelemetry < Formula
       FIRST TIME SETUP:
         1. Open System Settings > Privacy & Security > Accessibility
         2. Click + and press Cmd+Shift+G
-        3. Paste: /opt/homebrew/bin/typtel-menubar
-        4. Enable the checkbox
+        3. Paste: ~/Applications/Typtel.app
+        4. Enable the checkbox for Typtel
         5. Start: brew services start typing-telemetry
+
+      You can also launch Typtel from Spotlight (Cmd+Space, type "Typtel")
+      to restart the menubar if it disappears.
 
       COMMANDS:
         typtel           - Interactive dashboard
