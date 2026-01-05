@@ -1,11 +1,11 @@
 class TypingTelemetry < Formula
-  desc "Keystroke telemetry for developers - track your daily typing"
+  desc "Keystroke and mouse telemetry for developers - track your daily typing and mouse movement"
   homepage "https://github.com/abaj8494/typing-telemetry"
-  version "0.5.0"
+  version "0.6.0"
   license "MIT"
 
   # Install from GitHub repository
-  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.5.0"
+  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v0.6.0"
   head "https://github.com/abaj8494/typing-telemetry.git", branch: "main"
 
   depends_on :macos
@@ -57,7 +57,13 @@ class TypingTelemetry < Formula
         typtel today     - Show today's keystroke count
         typtel test      - Start a typing speed test
 
-      The menu bar app (typtel-menubar) includes the keystroke daemon.
+      Features:
+        - Keystroke and word counting
+        - Mouse movement tracking (distance traveled)
+        - Stillness Leaderboard (days with least mouse movement)
+        - Charts and heatmaps via View Charts menu
+
+      The menu bar app (typtel-menubar) includes the keystroke and mouse daemon.
       Alternatively, you can run typtel-daemon directly for headless operation.
     EOS
   end
