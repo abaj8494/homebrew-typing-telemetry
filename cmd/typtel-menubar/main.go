@@ -32,6 +32,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
 	"github.com/aayushbajaj/typing-telemetry/internal/mousetracker"
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
@@ -161,6 +162,25 @@ func main() {
 		log.Println("Mouse tracking is disabled")
 	}
 
+	// Start inertia system if enabled
+	inertiaSettings := store.GetInertiaSettings()
+	if inertiaSettings.Enabled {
+		inertiaCfg := inertia.Config{
+			Enabled:   true,
+			MaxSpeed:  inertiaSettings.MaxSpeed,
+			Threshold: inertiaSettings.Threshold,
+			AccelRate: inertiaSettings.AccelRate,
+		}
+		if err := inertia.Start(inertiaCfg); err != nil {
+			log.Printf("Warning: Failed to start inertia: %v", err)
+		} else {
+			log.Println("Inertia system started")
+			defer inertia.Stop()
+		}
+	} else {
+		log.Println("Inertia is disabled")
+	}
+
 	// Handle graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
@@ -241,7 +261,7 @@ func updateMenuBarTitle() {
 	})
 }
 
-const Version = "0.9.0"
+const Version = "0.10.0"
 
 func menuItems() []menuet.MenuItem {
 	stats, _ := store.GetTodayStats()
@@ -471,6 +491,7 @@ func chartMenuItems() []menuet.MenuItem {
 func settingsMenuItems() []menuet.MenuItem {
 	settings := store.GetMenubarSettings()
 	mouseTrackingEnabled := store.IsMouseTrackingEnabled()
+	inertiaSettings := store.GetInertiaSettings()
 
 	checkmark := func(enabled bool) string {
 		if enabled {
@@ -537,11 +558,199 @@ func settingsMenuItems() []menuet.MenuItem {
 				// Show restart message
 				menuet.App().Alert(menuet.Alert{
 					MessageText:     "Mouse Tracking " + map[bool]string{true: "Disabled", false: "Enabled"}[enabled],
-					InformativeText: "Restart the service for changes to take effect:\nbrew services restart typing-telemetry",
+					InformativeText: "Restart the app for changes to take effect.",
 					Buttons:         []string{"OK"},
 				})
 			},
 		},
+		{
+			Type: menuet.Separator,
+		},
+		{
+			Text: "⚡ Inertia (Key Acceleration):",
+		},
+		{
+			Text: checkmark(inertiaSettings.Enabled) + "Enable Inertia",
+			Clicked: func() {
+				s := store.GetInertiaSettings()
+				newEnabled := !s.Enabled
+				store.SetInertiaEnabled(newEnabled)
+
+				// Update inertia system in real-time
+				if newEnabled {
+					cfg := inertia.Config{
+						Enabled:   true,
+						MaxSpeed:  s.MaxSpeed,
+						Threshold: s.Threshold,
+						AccelRate: s.AccelRate,
+					}
+					inertia.Start(cfg)
+				} else {
+					inertia.Stop()
+				}
+
+				menuet.App().Alert(menuet.Alert{
+					MessageText:     "Inertia " + map[bool]string{true: "Enabled", false: "Disabled"}[newEnabled],
+					InformativeText: "Key acceleration is now " + map[bool]string{true: "active", false: "inactive"}[newEnabled] + ".\n\nHold any key to accelerate repeat speed.\nDouble-tap Shift to reset acceleration.",
+					Buttons:         []string{"OK"},
+				})
+			},
+		},
+		{
+			Text:     "   Max Speed",
+			Children: inertiaMaxSpeedMenuItems,
+		},
+		{
+			Text:     "   Threshold (ms)",
+			Children: inertiaThresholdMenuItems,
+		},
+		{
+			Text:     "   Acceleration Rate",
+			Children: inertiaAccelRateMenuItems,
+		},
+	}
+}
+
+// inertiaMaxSpeedMenuItems returns the max speed selection submenu
+func inertiaMaxSpeedMenuItems() []menuet.MenuItem {
+	currentSpeed := store.GetInertiaSettings().MaxSpeed
+
+	checkmark := func(speed string) string {
+		if currentSpeed == speed {
+			return "✓ "
+		}
+		return "   "
+	}
+
+	return []menuet.MenuItem{
+		{
+			Text: checkmark(storage.InertiaSpeedInfinite) + "Infinite (no cap)",
+			Clicked: func() {
+				store.SetInertiaMaxSpeed(storage.InertiaSpeedInfinite)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(storage.InertiaSpeedFast) + "Fast (~100 keys/sec)",
+			Clicked: func() {
+				store.SetInertiaMaxSpeed(storage.InertiaSpeedFast)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(storage.InertiaSpeedMedium) + "Medium (~50 keys/sec)",
+			Clicked: func() {
+				store.SetInertiaMaxSpeed(storage.InertiaSpeedMedium)
+				updateInertiaConfig()
+			},
+		},
+	}
+}
+
+// inertiaThresholdMenuItems returns the threshold selection submenu
+func inertiaThresholdMenuItems() []menuet.MenuItem {
+	currentThreshold := store.GetInertiaSettings().Threshold
+
+	checkmark := func(threshold int) string {
+		if currentThreshold == threshold {
+			return "✓ "
+		}
+		return "   "
+	}
+
+	return []menuet.MenuItem{
+		{
+			Text: checkmark(50) + "50ms (instant)",
+			Clicked: func() {
+				store.SetInertiaThreshold(50)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(100) + "100ms (fast)",
+			Clicked: func() {
+				store.SetInertiaThreshold(100)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(150) + "150ms (default)",
+			Clicked: func() {
+				store.SetInertiaThreshold(150)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(200) + "200ms (slow)",
+			Clicked: func() {
+				store.SetInertiaThreshold(200)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(300) + "300ms (very slow)",
+			Clicked: func() {
+				store.SetInertiaThreshold(300)
+				updateInertiaConfig()
+			},
+		},
+	}
+}
+
+// inertiaAccelRateMenuItems returns the acceleration rate selection submenu
+func inertiaAccelRateMenuItems() []menuet.MenuItem {
+	currentRate := store.GetInertiaSettings().AccelRate
+
+	checkmark := func(rate float64) string {
+		if currentRate == rate {
+			return "✓ "
+		}
+		return "   "
+	}
+
+	return []menuet.MenuItem{
+		{
+			Text: checkmark(0.5) + "0.5x (gentle)",
+			Clicked: func() {
+				store.SetInertiaAccelRate(0.5)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(1.0) + "1.0x (default)",
+			Clicked: func() {
+				store.SetInertiaAccelRate(1.0)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(1.5) + "1.5x (faster)",
+			Clicked: func() {
+				store.SetInertiaAccelRate(1.5)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(2.0) + "2.0x (aggressive)",
+			Clicked: func() {
+				store.SetInertiaAccelRate(2.0)
+				updateInertiaConfig()
+			},
+		},
+	}
+}
+
+// updateInertiaConfig updates the running inertia system with new settings
+func updateInertiaConfig() {
+	s := store.GetInertiaSettings()
+	if s.Enabled {
+		cfg := inertia.Config{
+			Enabled:   true,
+			MaxSpeed:  s.MaxSpeed,
+			Threshold: s.Threshold,
+			AccelRate: s.AccelRate,
+		}
+		inertia.UpdateConfig(cfg)
 	}
 }
 

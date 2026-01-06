@@ -2,6 +2,7 @@ package storage
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -461,6 +462,11 @@ const (
 	SettingShowDistance         = "menubar_show_distance"
 	SettingMouseTrackingEnabled = "mouse_tracking_enabled"
 	SettingDistanceUnit         = "distance_unit"
+	// Inertia settings
+	SettingInertiaEnabled   = "inertia_enabled"
+	SettingInertiaMaxSpeed  = "inertia_max_speed"
+	SettingInertiaThreshold = "inertia_threshold"
+	SettingInertiaAccelRate = "inertia_accel_rate"
 )
 
 // Distance unit options
@@ -468,6 +474,13 @@ const (
 	DistanceUnitFeet    = "feet"    // feet/miles (default)
 	DistanceUnitCars    = "cars"    // average car length ~15ft
 	DistanceUnitFrisbee = "frisbee" // ultimate frisbee field ~330ft
+)
+
+// Inertia max speed options
+const (
+	InertiaSpeedInfinite = "infinite" // No cap, keeps accelerating
+	InertiaSpeedFast     = "fast"     // Cap at ~100 keys/sec
+	InertiaSpeedMedium   = "medium"   // Cap at ~50 keys/sec
 )
 
 // MenubarSettings represents what to show in the menubar
@@ -574,4 +587,85 @@ func (s *Store) GetDistanceUnit() string {
 // SetDistanceUnit sets the distance unit
 func (s *Store) SetDistanceUnit(unit string) error {
 	return s.SetSetting(SettingDistanceUnit, unit)
+}
+
+// InertiaSettings represents inertia configuration
+type InertiaSettings struct {
+	Enabled   bool
+	MaxSpeed  string  // "infinite", "fast", "medium"
+	Threshold int     // ms before acceleration starts (default 150)
+	AccelRate float64 // acceleration multiplier (default 1.0)
+}
+
+// GetInertiaSettings returns the current inertia settings
+func (s *Store) GetInertiaSettings() InertiaSettings {
+	settings := InertiaSettings{
+		Enabled:   false,
+		MaxSpeed:  InertiaSpeedFast,
+		Threshold: 150,
+		AccelRate: 1.0,
+	}
+
+	if val, _ := s.GetSetting(SettingInertiaEnabled); val == "true" {
+		settings.Enabled = true
+	}
+
+	if val, _ := s.GetSetting(SettingInertiaMaxSpeed); val != "" {
+		settings.MaxSpeed = val
+	}
+
+	if val, _ := s.GetSetting(SettingInertiaThreshold); val != "" {
+		if v, err := parseInt(val); err == nil && v > 0 {
+			settings.Threshold = v
+		}
+	}
+
+	if val, _ := s.GetSetting(SettingInertiaAccelRate); val != "" {
+		if v, err := parseFloat(val); err == nil && v > 0 {
+			settings.AccelRate = v
+		}
+	}
+
+	return settings
+}
+
+// SetInertiaEnabled sets whether inertia is enabled
+func (s *Store) SetInertiaEnabled(enabled bool) error {
+	return s.SetSetting(SettingInertiaEnabled, boolToString(enabled))
+}
+
+// SetInertiaMaxSpeed sets the inertia max speed
+func (s *Store) SetInertiaMaxSpeed(speed string) error {
+	return s.SetSetting(SettingInertiaMaxSpeed, speed)
+}
+
+// SetInertiaThreshold sets the inertia threshold in ms
+func (s *Store) SetInertiaThreshold(threshold int) error {
+	return s.SetSetting(SettingInertiaThreshold, intToString(threshold))
+}
+
+// SetInertiaAccelRate sets the inertia acceleration rate
+func (s *Store) SetInertiaAccelRate(rate float64) error {
+	return s.SetSetting(SettingInertiaAccelRate, floatToString(rate))
+}
+
+// Helper functions for parsing
+func parseInt(s string) (int, error) {
+	var v int
+	_, err := fmt.Sscanf(s, "%d", &v)
+	return v, err
+}
+
+func parseFloat(s string) (float64, error) {
+	var v float64
+	_, err := fmt.Sscanf(s, "%f", &v)
+	return v, err
+}
+
+func intToString(i int) string {
+	return fmt.Sprintf("%d", i)
+}
+
+func floatToString(f float64) string {
+	return fmt.Sprintf("%.2f", f)
 }
