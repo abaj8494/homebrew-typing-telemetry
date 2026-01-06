@@ -18,6 +18,8 @@ Typtel requires accessibility permissions to capture input events:
 3. Enable the checkbox for Typtel
 4. Restart the app from the menu bar or via `open /Applications/Typtel.app`
 
+> **After upgrading:** macOS requires you to re-grant permissions when the app binary changes. If Typtel won't launch after an upgrade, remove it from Accessibility and re-add it.
+
 ## CLI
 
 The `typtel` command provides a terminal interface to your typing data.

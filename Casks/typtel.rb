@@ -36,6 +36,10 @@ cask "typtel" do
       2. Click + and select /Applications/Typtel.app
       3. Enable the checkbox
 
+    AFTER UPGRADING:
+      macOS requires re-granting permissions when the binary changes.
+      If Typtel won't launch, remove it from Accessibility and re-add it.
+
     START:
       Open Typtel from Spotlight (Cmd+Space, type "Typtel")
       Or run: open /Applications/Typtel.app
