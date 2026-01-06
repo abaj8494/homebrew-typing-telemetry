@@ -151,7 +151,7 @@ func debugLog(format string, args ...interface{}) {
 type Config struct {
 	Enabled       bool
 	MaxSpeed      string  // "very_fast", "fast", "medium"
-	Threshold     int     // ms before acceleration starts (default 150)
+	Threshold     int     // ms before acceleration starts (default 200)
 	AccelRate     float64 // acceleration multiplier (default 1.0)
 }
 
@@ -160,7 +160,7 @@ func DefaultConfig() Config {
 	return Config{
 		Enabled:   false,
 		MaxSpeed:  "fast",
-		Threshold: 150,
+		Threshold: 200,
 		AccelRate: 1.0,
 	}
 }

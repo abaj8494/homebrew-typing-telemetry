@@ -670,37 +670,37 @@ func inertiaThresholdMenuItems() []menuet.MenuItem {
 
 	return []menuet.MenuItem{
 		{
-			Text: checkmark(50) + "50ms (instant)",
-			Clicked: func() {
-				store.SetInertiaThreshold(50)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(100) + "100ms (fast)",
+			Text: checkmark(100) + "100ms (instant)",
 			Clicked: func() {
 				store.SetInertiaThreshold(100)
 				updateInertiaConfig()
 			},
 		},
 		{
-			Text: checkmark(150) + "150ms (default)",
+			Text: checkmark(150) + "150ms (fast)",
 			Clicked: func() {
 				store.SetInertiaThreshold(150)
 				updateInertiaConfig()
 			},
 		},
 		{
-			Text: checkmark(200) + "200ms (slow)",
+			Text: checkmark(200) + "200ms (default)",
 			Clicked: func() {
 				store.SetInertiaThreshold(200)
 				updateInertiaConfig()
 			},
 		},
 		{
-			Text: checkmark(300) + "300ms (very slow)",
+			Text: checkmark(250) + "250ms (slow)",
 			Clicked: func() {
-				store.SetInertiaThreshold(300)
+				store.SetInertiaThreshold(250)
+				updateInertiaConfig()
+			},
+		},
+		{
+			Text: checkmark(350) + "350ms (very slow)",
+			Clicked: func() {
+				store.SetInertiaThreshold(350)
 				updateInertiaConfig()
 			},
 		},

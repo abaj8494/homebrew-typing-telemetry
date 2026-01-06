@@ -18,7 +18,7 @@ Typtel requires accessibility permissions to capture input events:
 3. Enable the checkbox for Typtel
 4. Restart the app from the menu bar or via `open /Applications/Typtel.app`
 
-> **After upgrading:** macOS requires you to re-grant permissions when the app binary changes. If Typtel won't launch after an upgrade, remove it from Accessibility and re-add it.
+> **IMPORTANT: After upgrading:** macOS requires you to re-grant permissions when the app binary changes. If Typtel won't launch after an upgrade, remove it from Accessibility and re-add it.
 
 ## CLI
 
@@ -63,7 +63,7 @@ Toggle and configure via **Settings** > **Inertia Settings** in the menu bar:
 |-------------------|----------------------------------|
 | Enable/Disable    | Toggle inertia on or off         |
 | Max Speed         | Ultra Fast (140/s), Very Fast (125/s), Fast (83/s), Medium (50/s), Slow (20/s) |
-| Threshold         | 50ms - 300ms before acceleration |
+| Threshold         | 100ms - 350ms before acceleration |
 | Acceleration Rate | 0.25x - 2.0x multiplier          |
 
 Double-tap Shift to reset acceleration to base speed.

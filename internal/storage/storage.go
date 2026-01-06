@@ -595,7 +595,7 @@ func (s *Store) SetDistanceUnit(unit string) error {
 type InertiaSettings struct {
 	Enabled   bool
 	MaxSpeed  string  // "very_fast", "fast", "medium"
-	Threshold int     // ms before acceleration starts (default 150)
+	Threshold int     // ms before acceleration starts (default 200)
 	AccelRate float64 // acceleration multiplier (default 1.0)
 }
 
@@ -604,7 +604,7 @@ func (s *Store) GetInertiaSettings() InertiaSettings {
 	settings := InertiaSettings{
 		Enabled:   false,
 		MaxSpeed:  InertiaSpeedFast,
-		Threshold: 150,
+		Threshold: 200,
 		AccelRate: 1.0,
 	}
 
