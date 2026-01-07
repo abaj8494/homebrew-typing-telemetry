@@ -108,6 +108,14 @@ type Option struct {
 	Value       interface{}
 }
 
+// MenuFocus tracks which part of the UI has focus
+type MenuFocus int
+
+const (
+	FocusTyping MenuFocus = iota
+	FocusMenuBar
+)
+
 type TypingTestModel struct {
 	targetText    string
 	typed         string
@@ -128,8 +136,12 @@ type TypingTestModel struct {
 	subMenuIdx    int
 	personalBest  float64 // Personal best WPM
 	avgWPM        float64 // Average WPM from past tests
+	testCount     int     // Number of tests completed
 	inCustomWPMInput bool   // Whether we're inputting custom WPM
 	customWPMInput   string // Buffer for custom WPM input
+	menuFocus     MenuFocus // Current UI focus
+	menuSelection int       // Selected menu item (0=stats)
+	showStats     bool      // Show stats panel
 }
 
 type tickMsg time.Time
@@ -143,7 +155,7 @@ func NewTypingTest(sourceFile string, wordCount int) TypingTestModel {
 		Layout:        "qwerty",
 		LiveWPM:       true,
 		WordCount:     wordCount,
-		Punctuation:   false,
+		Punctuation:   true, // Enabled by default
 		PaceCaret:     PaceOff,
 		CustomPaceWPM: 60.0,
 		Theme:         "default",
@@ -186,7 +198,7 @@ func NewTypingTest(sourceFile string, wordCount int) TypingTestModel {
 			Name:        "Punctuation",
 			Description: "Sentence-style capitalization and punctuation",
 			Type:        "toggle",
-			Value:       false,
+			Value:       true, // Enabled by default
 		},
 		{
 			ID:          "pace_caret",
@@ -199,14 +211,18 @@ func NewTypingTest(sourceFile string, wordCount int) TypingTestModel {
 	}
 
 	m := TypingTestModel{
-		state:        StateReady,
-		sourceFile:   sourceFile,
-		wordCount:    wordCount,
-		options:      options,
-		allOptions:   allOptions,
-		filteredOpts: allOptions,
-		personalBest: 0,
-		avgWPM:       50.0, // Default average
+		state:         StateReady,
+		sourceFile:    sourceFile,
+		wordCount:     wordCount,
+		options:       options,
+		allOptions:    allOptions,
+		filteredOpts:  allOptions,
+		personalBest:  0,
+		avgWPM:        50.0, // Default average
+		testCount:     0,
+		menuFocus:     FocusTyping,
+		menuSelection: 0,
+		showStats:     false,
 	}
 
 	m.targetText = m.generateText()
@@ -436,9 +452,47 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateOptions(msg)
 		}
 
+		// Handle stats panel
+		if m.showStats {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				return m, tea.Quit
+			case tea.KeyEsc, tea.KeyEnter:
+				m.showStats = false
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// Handle menubar focus
+		if m.menuFocus == FocusMenuBar {
+			switch msg.Type {
+			case tea.KeyCtrlC:
+				return m, tea.Quit
+			case tea.KeyDown, tea.KeyEsc:
+				m.menuFocus = FocusTyping
+				return m, nil
+			case tea.KeyEnter:
+				// Activate selected menu item
+				if m.menuSelection == 0 {
+					m.showStats = true
+				}
+				m.menuFocus = FocusTyping
+				return m, nil
+			}
+			return m, nil
+		}
+
 		switch msg.Type {
 		case tea.KeyCtrlC:
 			return m, tea.Quit
+
+		case tea.KeyUp:
+			// Move focus to menubar (only when not typing)
+			if m.state != StateRunning {
+				m.menuFocus = FocusMenuBar
+			}
+			return m, nil
 
 		case tea.KeyEsc:
 			// Open options menu
@@ -475,8 +529,9 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if wpm > m.personalBest {
 					m.personalBest = wpm
 				}
-				// Update average (simple moving average)
-				m.avgWPM = (m.avgWPM + wpm) / 2
+				// Update average (weighted moving average)
+				m.testCount++
+				m.avgWPM = ((m.avgWPM * float64(m.testCount-1)) + wpm) / float64(m.testCount)
 
 				// Restart with new text
 				m.resetTest()
@@ -497,15 +552,18 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == StateRunning {
 				m.typed += char
 
-				// Check if character is wrong
+				// Check if character is wrong (only count errors for target length)
 				if len(m.typed) <= len(m.targetText) {
 					if m.typed[len(m.typed)-1] != m.targetText[len(m.typed)-1] {
 						m.errors++
 					}
+				} else {
+					// Extra characters are always errors
+					m.errors++
 				}
 
-				// Check if finished
-				if len(m.typed) >= len(m.targetText) {
+				// Check if finished (typed matches or exceeds target AND ends correctly)
+				if len(m.typed) >= len(m.targetText) && m.typed[:len(m.targetText)] == m.targetText {
 					m.state = StateFinished
 					m.endTime = time.Now()
 				}
@@ -647,25 +705,49 @@ func (m TypingTestModel) View() string {
 		return m.centerContent(m.renderOptions())
 	}
 
+	// Show stats panel if active
+	if m.showStats {
+		return m.centerContent(m.renderStatsPanel())
+	}
+
 	var b strings.Builder
 
-	// Title
-	b.WriteString(titleStyle.Render("⌨️  Typing Test"))
+	// Menubar at top
+	b.WriteString(m.renderMenuBar())
 	b.WriteString("\n\n")
 
+	// Calculate box width based on terminal width
+	boxWidth := m.width - 8
+	if boxWidth < 40 {
+		boxWidth = 40
+	}
+	if boxWidth > 100 {
+		boxWidth = 100
+	}
+
+	// Build typing test content for the box
+	var testContent strings.Builder
+
+	// Show average pace and info ONLY before typing starts
 	if m.state == StateReady {
-		b.WriteString(promptStyle.Render("Start typing to begin..."))
-		b.WriteString("\n\n")
+		if m.avgWPM > 0 && m.testCount > 0 {
+			testContent.WriteString(promptStyle.Render(fmt.Sprintf("Average: %.0f WPM", m.avgWPM)))
+			if m.personalBest > 0 {
+				testContent.WriteString(promptStyle.Render(fmt.Sprintf("  •  Best: %.0f WPM", m.personalBest)))
+			}
+			testContent.WriteString("\n\n")
+		}
+		testContent.WriteString(promptStyle.Render("Start typing to begin..."))
+		testContent.WriteString("\n\n")
 	}
 
 	// Render the text with highlighting
-	b.WriteString(m.renderText())
-	b.WriteString("\n")
+	testContent.WriteString(m.renderText())
 
-	// Stats during typing
+	// Stats during typing (minimal, inside box)
 	if m.state == StateRunning && m.options.LiveWPM {
 		elapsed := time.Since(m.startTime).Seconds()
-		wordsTyped := float64(len(m.typed)) / 5.0 // Standard: 5 chars = 1 word
+		wordsTyped := float64(len(m.typed)) / 5.0
 		wpm := 0.0
 		if elapsed > 0 {
 			wpm = (wordsTyped / elapsed) * 60
@@ -673,56 +755,97 @@ func (m TypingTestModel) View() string {
 
 		accuracy := 100.0
 		if len(m.typed) > 0 {
-			accuracy = float64(len(m.typed)-m.errors) / float64(len(m.typed)) * 100
+			correctChars := 0
+			for i := 0; i < len(m.typed) && i < len(m.targetText); i++ {
+				if m.typed[i] == m.targetText[i] {
+					correctChars++
+				}
+			}
+			accuracy = float64(correctChars) / float64(len(m.typed)) * 100
 		}
 
-		progress := float64(len(m.typed)) / float64(len(m.targetText)) * 100
-
-		stats := fmt.Sprintf(
-			"%s %.0f  %s %.0f%%  %s %.0f%%",
+		testContent.WriteString("\n\n")
+		testContent.WriteString(fmt.Sprintf(
+			"%s %.0f  %s %.0f%%",
 			resultLabelStyle.Render("WPM:"),
 			wpm,
-			resultLabelStyle.Render("Accuracy:"),
+			resultLabelStyle.Render("Acc:"),
 			accuracy,
-			resultLabelStyle.Render("Progress:"),
-			progress,
-		)
-		b.WriteString("\n")
-		b.WriteString(stats)
+		))
 	}
 
-	// Final results
+	// Final results (inside box)
 	if m.state == StateFinished {
-		b.WriteString(m.renderResults())
+		testContent.WriteString("\n")
+		testContent.WriteString(m.renderResults())
 	}
 
-	// Help
+	// Create the typing test box
+	typingBoxStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color(CurrentTheme.Border)).
+		Padding(1, 2).
+		Width(boxWidth)
+
+	b.WriteString(typingBoxStyle.Render(testContent.String()))
+
+	// Help text OUTSIDE the box
 	b.WriteString("\n\n")
 	if m.state == StateFinished {
-		b.WriteString(helpStyle.Render("enter: new test • tab: restart • esc: options • ctrl+c: quit"))
+		b.WriteString(helpStyle.Render("enter: new test • tab: restart • esc: options • ↑: menu • ctrl+c: quit"))
+	} else if m.state == StateRunning {
+		b.WriteString(helpStyle.Render("tab: restart • ctrl+c: quit"))
 	} else {
-		b.WriteString(helpStyle.Render("tab: restart • esc: options • ctrl+c: quit"))
+		b.WriteString(helpStyle.Render("tab: restart • esc: options • ↑: menu • ctrl+c: quit"))
 	}
-
-	// Show current options summary
-	b.WriteString("\n")
-	opts := fmt.Sprintf("theme: %s • layout: %s • words: %d", m.options.Theme, m.options.Layout, m.options.WordCount)
-	if m.options.Punctuation {
-		opts += " • punct"
-	}
-	if m.options.PaceCaret != PaceOff {
-		switch m.options.PaceCaret {
-		case PacePB:
-			opts += " • pace:pb"
-		case PaceAverage:
-			opts += " • pace:avg"
-		case PaceCustom:
-			opts += fmt.Sprintf(" • pace:%.0f", m.options.CustomPaceWPM)
-		}
-	}
-	b.WriteString(promptStyle.Render(opts))
 
 	return m.centerContent(b.String())
+}
+
+// renderMenuBar renders the top menubar
+func (m TypingTestModel) renderMenuBar() string {
+	// Stats button
+	statsLabel := "[ Stats ]"
+	if m.menuFocus == FocusMenuBar && m.menuSelection == 0 {
+		statsLabel = selectedOptionStyle.Render("[ Stats ]")
+	} else {
+		statsLabel = promptStyle.Render("[ Stats ]")
+	}
+
+	// Title
+	title := titleStyle.Render(":: Typing Test")
+
+	// Combine menubar elements
+	return fmt.Sprintf("%s    %s", statsLabel, title)
+}
+
+// renderStatsPanel renders the statistics panel
+func (m TypingTestModel) renderStatsPanel() string {
+	var b strings.Builder
+
+	b.WriteString(optionsTitleStyle.Render(":: Statistics"))
+	b.WriteString("\n\n")
+
+	if m.testCount == 0 {
+		b.WriteString(promptStyle.Render("No tests completed yet."))
+		b.WriteString("\n\n")
+		b.WriteString(promptStyle.Render("Complete a typing test to see your stats!"))
+	} else {
+		b.WriteString(fmt.Sprintf("%s %s\n",
+			resultLabelStyle.Render("Tests Completed:"),
+			resultValueStyle.Render(fmt.Sprintf("%d", m.testCount))))
+		b.WriteString(fmt.Sprintf("%s %s\n",
+			resultLabelStyle.Render("Personal Best:"),
+			resultValueStyle.Render(fmt.Sprintf("%.1f WPM", m.personalBest))))
+		b.WriteString(fmt.Sprintf("%s %s\n",
+			resultLabelStyle.Render("Average WPM:"),
+			resultValueStyle.Render(fmt.Sprintf("%.1f WPM", m.avgWPM))))
+	}
+
+	b.WriteString("\n\n")
+	b.WriteString(helpStyle.Render("enter/esc: close"))
+
+	return optionsBoxStyle.Render(b.String())
 }
 
 // centerContent centers the content both horizontally and vertically
@@ -774,7 +897,7 @@ func (m TypingTestModel) centerContent(content string) string {
 func (m TypingTestModel) renderOptions() string {
 	var b strings.Builder
 
-	b.WriteString(optionsTitleStyle.Render("⚙️  Options"))
+	b.WriteString(optionsTitleStyle.Render(":: Options"))
 	b.WriteString("\n\n")
 
 	// Show custom WPM input if in that mode
@@ -796,7 +919,7 @@ func (m TypingTestModel) renderOptions() string {
 	if searchContent == "" {
 		searchContent = promptStyle.Render("Type to search...")
 	}
-	b.WriteString(searchBoxStyle.Render("🔍 " + searchContent))
+	b.WriteString(searchBoxStyle.Render("> " + searchContent))
 	b.WriteString("\n\n")
 
 	// Options list
@@ -862,9 +985,13 @@ func (m TypingTestModel) renderOptions() string {
 func (m TypingTestModel) renderText() string {
 	var b strings.Builder
 
-	maxWidth := m.width - 4
+	// Use box-appropriate width for wrapping
+	maxWidth := m.width - 16 // Account for box padding and borders
 	if maxWidth <= 0 {
-		maxWidth = 80
+		maxWidth = 70
+	}
+	if maxWidth > 90 {
+		maxWidth = 90
 	}
 
 	// Calculate pace caret position
@@ -881,7 +1008,6 @@ func (m TypingTestModel) renderText() string {
 			targetWPM = m.options.CustomPaceWPM
 		}
 		if targetWPM > 0 {
-			// Characters per second at target WPM (5 chars per word)
 			charsPerSecond := (targetWPM * 5) / 60
 			pacePos = int(charsPerSecond * elapsed)
 			if pacePos > len(m.targetText)-1 {
@@ -890,33 +1016,101 @@ func (m TypingTestModel) renderText() string {
 		}
 	}
 
-	// Wrap text to fit width
 	target := m.targetText
 	typed := m.typed
 
+	// Split target into words for proper wrapping
+	words := strings.Split(target, " ")
+
 	lineLen := 0
-	for i, char := range target {
-		// Add newline if needed
-		if lineLen >= maxWidth && char == ' ' {
-			b.WriteString("\n")
-			lineLen = 0
-			continue
+	charIdx := 0
+
+	for wordIdx, word := range words {
+		wordLen := len(word)
+
+		// Check if word would overflow - wrap to next line if needed
+		// +1 for the space after the word (except last word)
+		spaceNeeded := wordLen
+		if wordIdx < len(words)-1 {
+			spaceNeeded++
 		}
 
-		if i < len(typed) {
-			if typed[i] == byte(char) {
-				b.WriteString(correctStyle.Render(string(char)))
-			} else {
-				b.WriteString(incorrectStyle.Render(string(char)))
-			}
-		} else if i == len(typed) {
-			b.WriteString(cursorStyle.Render(string(char)))
-		} else if i == pacePos {
-			b.WriteString(paceCaretStyle.Render(string(char)))
-		} else {
-			b.WriteString(remainingStyle.Render(string(char)))
+		if lineLen > 0 && lineLen+spaceNeeded > maxWidth {
+			b.WriteString("\n")
+			lineLen = 0
 		}
-		lineLen++
+
+		// Render each character of the word
+		for _, char := range word {
+			if charIdx < len(typed) {
+				// Character has been typed
+				if typed[charIdx] == byte(char) {
+					b.WriteString(correctStyle.Render(string(char)))
+				} else {
+					b.WriteString(incorrectStyle.Render(string(char)))
+				}
+			} else if charIdx == len(typed) {
+				// Cursor position
+				b.WriteString(cursorStyle.Render(string(char)))
+			} else if charIdx == pacePos {
+				b.WriteString(paceCaretStyle.Render(string(char)))
+			} else {
+				b.WriteString(remainingStyle.Render(string(char)))
+			}
+			charIdx++
+			lineLen++
+		}
+
+		// Handle extra typed characters that overflow the current word
+		// These push the remaining text along
+		if charIdx <= len(typed) && wordIdx < len(words)-1 {
+			// Check if user typed more characters than this word contains
+			// Look for the space position in typed
+			nextSpaceInTarget := charIdx // This is where space should be
+			if nextSpaceInTarget < len(typed) {
+				// User has typed past this word - check for extra chars before space
+				for typedIdx := nextSpaceInTarget; typedIdx < len(typed); typedIdx++ {
+					if typed[typedIdx] == ' ' {
+						break
+					}
+					// Extra character - render as error
+					b.WriteString(incorrectStyle.Render(string(typed[typedIdx])))
+					lineLen++
+				}
+			}
+		}
+
+		// Add space between words (if not last word)
+		if wordIdx < len(words)-1 {
+			spaceChar := " "
+			if charIdx < len(typed) {
+				if typed[charIdx] == ' ' {
+					b.WriteString(correctStyle.Render(spaceChar))
+				} else {
+					b.WriteString(incorrectStyle.Render(spaceChar))
+				}
+			} else if charIdx == len(typed) {
+				b.WriteString(cursorStyle.Render(spaceChar))
+			} else if charIdx == pacePos {
+				b.WriteString(paceCaretStyle.Render(spaceChar))
+			} else {
+				b.WriteString(remainingStyle.Render(spaceChar))
+			}
+			charIdx++
+			lineLen++
+		}
+	}
+
+	// Render any extra characters typed beyond the target text
+	if len(typed) > len(target) {
+		for i := len(target); i < len(typed); i++ {
+			b.WriteString(incorrectStyle.Render(string(typed[i])))
+			lineLen++
+			if lineLen >= maxWidth {
+				b.WriteString("\n")
+				lineLen = 0
+			}
+		}
 	}
 
 	return b.String()
@@ -932,7 +1126,7 @@ func (m TypingTestModel) renderResults() string {
 
 	pbIndicator := ""
 	if wpm > m.personalBest && m.personalBest > 0 {
-		pbIndicator = " 🎉 NEW PB!"
+		pbIndicator = " ** NEW PB! **"
 	}
 
 	results := fmt.Sprintf(

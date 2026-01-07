@@ -102,7 +102,7 @@ func (m Model) View() string {
 	var b strings.Builder
 
 	// Title
-	b.WriteString(titleStyle.Render("⌨️  Typing Telemetry"))
+	b.WriteString(titleStyle.Render(":: Typing Telemetry"))
 	b.WriteString("\n\n")
 
 	// Today's stats box

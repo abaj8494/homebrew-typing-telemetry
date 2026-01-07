@@ -467,6 +467,11 @@ const (
 	SettingInertiaMaxSpeed  = "inertia_max_speed"
 	SettingInertiaThreshold = "inertia_threshold"
 	SettingInertiaAccelRate = "inertia_accel_rate"
+	// Typing test settings
+	SettingTypingTestPB      = "typing_test_pb"
+	SettingTypingTestAvgWPM  = "typing_test_avg_wpm"
+	SettingTypingTestCount   = "typing_test_count"
+	SettingTypingTestTheme   = "typing_test_theme"
 )
 
 // Distance unit options
@@ -670,4 +675,76 @@ func intToString(i int) string {
 
 func floatToString(f float64) string {
 	return fmt.Sprintf("%.2f", f)
+}
+
+// TypingTestStats holds typing test performance data
+type TypingTestStats struct {
+	PersonalBest float64 // Best WPM
+	AverageWPM   float64 // Running average WPM
+	TestCount    int     // Number of tests completed
+}
+
+// GetTypingTestStats retrieves typing test statistics
+func (s *Store) GetTypingTestStats() TypingTestStats {
+	stats := TypingTestStats{
+		PersonalBest: 0,
+		AverageWPM:   50.0, // Default average
+		TestCount:    0,
+	}
+
+	if val, _ := s.GetSetting(SettingTypingTestPB); val != "" {
+		if v, err := parseFloat(val); err == nil {
+			stats.PersonalBest = v
+		}
+	}
+
+	if val, _ := s.GetSetting(SettingTypingTestAvgWPM); val != "" {
+		if v, err := parseFloat(val); err == nil {
+			stats.AverageWPM = v
+		}
+	}
+
+	if val, _ := s.GetSetting(SettingTypingTestCount); val != "" {
+		if v, err := parseInt(val); err == nil {
+			stats.TestCount = v
+		}
+	}
+
+	return stats
+}
+
+// SaveTypingTestResult saves a new typing test result and updates stats
+func (s *Store) SaveTypingTestResult(wpm float64) error {
+	stats := s.GetTypingTestStats()
+
+	// Update personal best
+	if wpm > stats.PersonalBest {
+		if err := s.SetSetting(SettingTypingTestPB, floatToString(wpm)); err != nil {
+			return err
+		}
+	}
+
+	// Update running average (weighted average)
+	newCount := stats.TestCount + 1
+	newAvg := ((stats.AverageWPM * float64(stats.TestCount)) + wpm) / float64(newCount)
+	if err := s.SetSetting(SettingTypingTestAvgWPM, floatToString(newAvg)); err != nil {
+		return err
+	}
+
+	// Update test count
+	return s.SetSetting(SettingTypingTestCount, intToString(newCount))
+}
+
+// GetTypingTestTheme retrieves the saved theme preference
+func (s *Store) GetTypingTestTheme() string {
+	val, _ := s.GetSetting(SettingTypingTestTheme)
+	if val == "" {
+		return "default"
+	}
+	return val
+}
+
+// SetTypingTestTheme saves the theme preference
+func (s *Store) SetTypingTestTheme(theme string) error {
+	return s.SetSetting(SettingTypingTestTheme, theme)
 }
