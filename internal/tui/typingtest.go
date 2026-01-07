@@ -771,39 +771,47 @@ func (m TypingTestModel) View() string {
 		}
 		testContent.WriteString(promptStyle.Render("Start typing to begin..."))
 		testContent.WriteString("\n\n")
+	} else if m.state == StateRunning {
+		// Add top padding to maintain consistent box height during running
+		testContent.WriteString("\n")
 	}
 
 	// Render the text with highlighting
 	testContent.WriteString(m.renderText())
 
-	// Stats during typing (minimal, inside box)
-	if m.state == StateRunning && m.options.LiveWPM {
-		elapsed := time.Since(m.startTime).Seconds()
-		wordsTyped := float64(len(m.typed)) / 5.0
-		wpm := 0.0
-		if elapsed > 0 {
-			wpm = (wordsTyped / elapsed) * 60
-		}
-
-		accuracy := 100.0
-		if len(m.typed) > 0 {
-			correctChars := 0
-			for i := 0; i < len(m.typed) && i < len(m.targetText); i++ {
-				if m.typed[i] == m.targetText[i] {
-					correctChars++
-				}
-			}
-			accuracy = float64(correctChars) / float64(len(m.typed)) * 100
-		}
-
+	// Stats during typing (always show during running to maintain consistent box height)
+	if m.state == StateRunning {
 		testContent.WriteString("\n\n")
-		testContent.WriteString(fmt.Sprintf(
-			"%s %.0f  %s %.0f%%",
-			resultLabelStyle.Render("WPM:"),
-			wpm,
-			resultLabelStyle.Render("Acc:"),
-			accuracy,
-		))
+		if m.options.LiveWPM {
+			elapsed := time.Since(m.startTime).Seconds()
+			wordsTyped := float64(len(m.typed)) / 5.0
+			wpm := 0.0
+			if elapsed > 0 {
+				wpm = (wordsTyped / elapsed) * 60
+			}
+
+			accuracy := 100.0
+			if len(m.typed) > 0 {
+				correctChars := 0
+				for i := 0; i < len(m.typed) && i < len(m.targetText); i++ {
+					if m.typed[i] == m.targetText[i] {
+						correctChars++
+					}
+				}
+				accuracy = float64(correctChars) / float64(len(m.typed)) * 100
+			}
+
+			testContent.WriteString(fmt.Sprintf(
+				"%s %.0f  %s %.0f%%",
+				resultLabelStyle.Render("WPM:"),
+				wpm,
+				resultLabelStyle.Render("Acc:"),
+				accuracy,
+			))
+		} else {
+			// Empty line to maintain box height when LiveWPM is off
+			testContent.WriteString(" ")
+		}
 	}
 
 	// Final results (inside box)

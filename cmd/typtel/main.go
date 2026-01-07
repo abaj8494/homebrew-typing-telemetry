@@ -80,8 +80,17 @@ func runTUI() error {
 	defer store.Close()
 
 	p := tea.NewProgram(tui.New(store), tea.WithAltScreen())
-	_, err = p.Run()
-	return err
+	model, err := p.Run()
+	if err != nil {
+		return err
+	}
+
+	// Check if user wants to switch to typing test
+	if m, ok := model.(tui.Model); ok && m.SwitchToTypingTest {
+		return runTypingTest()
+	}
+
+	return nil
 }
 
 func runTypingTest() error {
@@ -115,15 +124,17 @@ func showStats() error {
 		weekTotal += day.Keystrokes
 	}
 
-	// Calculate word estimates (keystrokes / 5)
-	todayWords := today.Keystrokes / 5
-	weekWords := weekTotal / 5
+	// Calculate week words from daily stats
+	var weekWords int64
+	for _, day := range week {
+		weekWords += day.Words
+	}
 
 	fmt.Println("📊 Typing Statistics")
 	fmt.Println("────────────────────")
-	fmt.Printf("Today:     %s keystrokes (~%s words)\n", formatNum(today.Keystrokes), formatNum(todayWords))
-	fmt.Printf("This week: %s keystrokes (~%s words)\n", formatNum(weekTotal), formatNum(weekWords))
-	fmt.Printf("Daily avg: %s keystrokes (~%s words)\n", formatNum(weekTotal/7), formatNum(weekWords/7))
+	fmt.Printf("Today:     %s keystrokes (%s words)\n", formatNum(today.Keystrokes), formatNum(today.Words))
+	fmt.Printf("This week: %s keystrokes (%s words)\n", formatNum(weekTotal), formatNum(weekWords))
+	fmt.Printf("Daily avg: %s keystrokes (%s words)\n", formatNum(weekTotal/7), formatNum(weekWords/7))
 
 	return nil
 }

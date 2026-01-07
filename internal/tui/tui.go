@@ -20,13 +20,14 @@ var (
 )
 
 type Model struct {
-	store       *storage.Store
-	todayStats  *storage.DailyStats
-	weekStats   []storage.DailyStats
-	hourlyStats []storage.HourlyStats
-	width       int
-	height      int
-	err         error
+	store            *storage.Store
+	todayStats       *storage.DailyStats
+	weekStats        []storage.DailyStats
+	hourlyStats      []storage.HourlyStats
+	width            int
+	height           int
+	err              error
+	SwitchToTypingTest bool // Flag to indicate user wants to switch to typing test
 }
 
 type statsMsg struct {
@@ -71,6 +72,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		case "r":
 			return m, m.fetchStats
+		case "t":
+			m.SwitchToTypingTest = true
+			return m, tea.Quit
 		}
 
 	case tea.WindowSizeMsg:
@@ -144,7 +148,7 @@ func (m Model) View() string {
 	b.WriteString("\n")
 
 	// Help
-	b.WriteString(helpStyle.Render("r: refresh • q: quit"))
+	b.WriteString(helpStyle.Render("t: typing test • r: refresh • q: quit"))
 
 	return b.String()
 }

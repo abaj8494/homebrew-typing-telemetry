@@ -319,9 +319,8 @@ func menuItems() []menuet.MenuItem {
 			Type: menuet.Separator,
 		},
 		{
-			Text:     "View Charts",
-			Clicked:  openCharts,
-			Children: chartMenuItems,
+			Text:    "View Charts",
+			Clicked: openCharts,
 		},
 		{
 			Text:     "🏆 Stillness Leaderboard",
