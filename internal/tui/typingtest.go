@@ -664,6 +664,33 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Restart with new text
 				m.resetTest()
+				return m, nil
+			}
+			// If custom text with newlines, Enter types a newline
+			if m.state == StateRunning && m.options.TestType == "custom" && strings.Contains(m.targetText, "\n") {
+				m.typed += "\n"
+				// Check if character is wrong
+				if len(m.typed) <= len(m.targetText) {
+					if m.typed[len(m.typed)-1] != m.targetText[len(m.typed)-1] {
+						m.errors++
+					}
+				} else {
+					m.errors++
+				}
+				// Check if finished
+				if len(m.typed) == len(m.targetText) {
+					if m.typed[len(m.typed)-1] == m.targetText[len(m.typed)-1] {
+						m.state = StateFinished
+						m.endTime = time.Now()
+						m.recordTestResult()
+					}
+				}
+				return m, nil
+			}
+			// Start test on Enter for custom text mode
+			if m.state == StateReady && m.options.TestType == "custom" && strings.Contains(m.targetText, "\n") {
+				m.state = StateRunning
+				m.startTime = time.Now()
 			}
 			return m, nil
 
@@ -844,10 +871,10 @@ func (m TypingTestModel) updateCustomPanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			m.inCustomTextInput = false
 			m.customTextInput = ""
 			return m, nil
-		case tea.KeyEnter:
-			// Save the custom text
+		case tea.KeyCtrlD, tea.KeyCtrlS:
+			// Ctrl+D or Ctrl+S: Save the custom text (preserving newlines as entered)
 			if strings.TrimSpace(m.customTextInput) != "" {
-				m.customTexts = append(m.customTexts, strings.TrimSpace(m.customTextInput))
+				m.customTexts = append(m.customTexts, m.customTextInput)
 				// Persist to storage
 				if m.store != nil {
 					m.store.SetTypingTestCustomTexts(strings.Join(m.customTexts, "\n---\n"))
@@ -855,6 +882,10 @@ func (m TypingTestModel) updateCustomPanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			}
 			m.inCustomTextInput = false
 			m.customTextInput = ""
+			return m, nil
+		case tea.KeyEnter:
+			// Enter adds a newline to the custom text
+			m.customTextInput += "\n"
 			return m, nil
 		case tea.KeyBackspace:
 			if len(m.customTextInput) > 0 {
@@ -991,12 +1022,23 @@ func (m TypingTestModel) View() string {
 		testContent.WriteString(m.renderResults())
 	}
 
-	// Create the typing test box
+	// Create the typing test box with height constraint to prevent bottom breaking
+	// Calculate available height: terminal height minus menu bar, help text, and margins
+	reservedLines := 8 // menu bar (2) + help text (2) + margins (4)
+	if m.state == StateRunning {
+		reservedLines = 4 // No menu bar or help text during running
+	}
+	availableHeight := m.height - reservedLines
+	if availableHeight < 10 {
+		availableHeight = 10 // Minimum height
+	}
+
 	typingBoxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(CurrentTheme.Border)).
 		Padding(1, 2).
-		Width(boxWidth)
+		Width(boxWidth).
+		MaxHeight(availableHeight)
 
 	b.WriteString(typingBoxStyle.Render(testContent.String()))
 
@@ -1075,19 +1117,30 @@ func (m TypingTestModel) renderCustomPanel() string {
 	b.WriteString("\n\n")
 
 	if m.inCustomTextInput {
-		b.WriteString(promptStyle.Render("Paste or type your custom text:"))
+		b.WriteString(promptStyle.Render("Type or paste your custom text (newlines preserved):"))
 		b.WriteString("\n\n")
 		inputDisplay := m.customTextInput
 		if inputDisplay == "" {
 			inputDisplay = "_"
 		}
-		// Truncate display if too long
-		if len(inputDisplay) > 60 {
-			inputDisplay = inputDisplay[:57] + "..."
+		// Show line count and character count
+		lineCount := strings.Count(inputDisplay, "\n") + 1
+		charCount := len(inputDisplay)
+		// Truncate display if too long (show first part)
+		displayLines := strings.Split(inputDisplay, "\n")
+		var truncatedDisplay string
+		if len(displayLines) > 3 {
+			truncatedDisplay = strings.Join(displayLines[:3], "\n") + "\n..."
+		} else if len(inputDisplay) > 80 {
+			truncatedDisplay = inputDisplay[:77] + "..."
+		} else {
+			truncatedDisplay = inputDisplay
 		}
-		b.WriteString(searchBoxStyle.Render(inputDisplay))
+		b.WriteString(searchBoxStyle.Render(truncatedDisplay))
+		b.WriteString("\n")
+		b.WriteString(promptStyle.Render(fmt.Sprintf("(%d chars, %d lines)", charCount, lineCount)))
 		b.WriteString("\n\n")
-		b.WriteString(helpStyle.Render("enter: save • esc: cancel"))
+		b.WriteString(helpStyle.Render("enter: newline • ctrl+d/ctrl+s: save • esc: cancel"))
 	} else {
 		if len(m.customTexts) == 0 {
 			b.WriteString(promptStyle.Render("No custom texts added yet."))
@@ -1291,7 +1344,12 @@ func (m TypingTestModel) renderText() string {
 	target := m.targetText
 	typed := m.typed
 
-	// Split target into words for proper wrapping
+	// Check if custom text mode with newlines - use special rendering
+	if m.options.TestType == "custom" && strings.Contains(target, "\n") {
+		return m.renderCustomTextWithNewlines(maxWidth, pacePos)
+	}
+
+	// Standard rendering: split target into words for proper wrapping
 	words := strings.Split(target, " ")
 
 	lineLen := 0
@@ -1371,6 +1429,89 @@ func (m TypingTestModel) renderText() string {
 			charIdx++
 			lineLen++
 		}
+	}
+
+	// Render any extra characters typed beyond the target text
+	if len(typed) > len(target) {
+		for i := len(target); i < len(typed); i++ {
+			b.WriteString(incorrectStyle.Render(string(typed[i])))
+			lineLen++
+			if lineLen >= maxWidth {
+				b.WriteString("\n")
+				lineLen = 0
+			}
+		}
+	}
+
+	return b.String()
+}
+
+// renderCustomTextWithNewlines renders custom text preserving newlines and adding
+// tab indentation for lines that are too long for the terminal
+func (m TypingTestModel) renderCustomTextWithNewlines(maxWidth int, pacePos int) string {
+	var b strings.Builder
+	target := m.targetText
+	typed := m.typed
+	charIdx := 0
+	lineLen := 0
+	isContinuation := false // Track if current line is a continuation
+
+	for i, char := range target {
+		// Handle newline characters
+		if char == '\n' {
+			// Render the newline - user must type Enter to match
+			if charIdx < len(typed) {
+				if typed[charIdx] == '\n' {
+					b.WriteString(correctStyle.Render("↵"))
+				} else {
+					b.WriteString(incorrectStyle.Render("↵"))
+				}
+			} else if charIdx == len(typed) {
+				b.WriteString(cursorStyle.Render("↵"))
+			} else if charIdx == pacePos {
+				b.WriteString(paceCaretStyle.Render("↵"))
+			} else {
+				b.WriteString(remainingStyle.Render("↵"))
+			}
+			b.WriteString("\n")
+			charIdx++
+			lineLen = 0
+			isContinuation = false
+			continue
+		}
+
+		// Check if we need to wrap due to line being too long
+		// Use maxWidth - 1 to leave room for continuation indicator
+		wrapWidth := maxWidth
+		if isContinuation {
+			wrapWidth = maxWidth - 4 // Account for tab indentation
+		}
+		if lineLen >= wrapWidth && char != ' ' {
+			// Find next word boundary to wrap cleanly
+			b.WriteString("\n")
+			b.WriteString(promptStyle.Render("    ")) // Tab indentation for continuation
+			lineLen = 4
+			isContinuation = true
+		}
+
+		// Render the character
+		if charIdx < len(typed) {
+			// Character has been typed
+			if i < len(typed) && typed[i] == byte(char) {
+				b.WriteString(correctStyle.Render(string(char)))
+			} else {
+				b.WriteString(incorrectStyle.Render(string(char)))
+			}
+		} else if charIdx == len(typed) {
+			// Cursor position
+			b.WriteString(cursorStyle.Render(string(char)))
+		} else if charIdx == pacePos {
+			b.WriteString(paceCaretStyle.Render(string(char)))
+		} else {
+			b.WriteString(remainingStyle.Render(string(char)))
+		}
+		charIdx++
+		lineLen++
 	}
 
 	// Render any extra characters typed beyond the target text

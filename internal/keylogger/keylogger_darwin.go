@@ -9,12 +9,14 @@ package keylogger
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
 
-extern void goKeystrokeCallback(int keycode);
+extern void goKeystrokeCallback(int keycode, int isRepeat);
 
 static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
     if (type == kCGEventKeyDown) {
         CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
-        goKeystrokeCallback((int)keycode);
+        // Check if this is a key repeat event (holding key down)
+        int isRepeat = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
+        goKeystrokeCallback((int)keycode, isRepeat);
     }
     return event;
 }
@@ -60,7 +62,12 @@ var (
 )
 
 //export goKeystrokeCallback
-func goKeystrokeCallback(keycode C.int) {
+func goKeystrokeCallback(keycode C.int, isRepeat C.int) {
+	// Ignore key repeat events - holding a key counts as 1 keypress
+	if isRepeat != 0 {
+		return
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	if keystrokeChan != nil {
