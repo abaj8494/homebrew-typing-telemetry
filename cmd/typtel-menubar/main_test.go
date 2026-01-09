@@ -123,7 +123,6 @@ func TestGenerateHourLabels(t *testing.T) {
 	}
 }
 
-
 func TestHeatmapColorConsistency(t *testing.T) {
 	// Verify colors are in increasing intensity order
 	colors := []string{
