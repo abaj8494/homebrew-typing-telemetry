@@ -123,42 +123,6 @@ func TestGenerateHourLabels(t *testing.T) {
 	}
 }
 
-func TestFormatDistanceShort(t *testing.T) {
-	tests := []struct {
-		name     string
-		pixels   float64
-		contains string
-	}{
-		{"small distance", 100, "in"},       // inches
-		{"medium distance", 10000, "ft"},    // feet
-		{"large distance", 100000000, "mi"}, // miles (need more pixels at ~100 PPI)
-		{"zero distance", 0, "0"},           // zero
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := formatDistanceShort(tt.pixels)
-			if !strings.Contains(result, tt.contains) {
-				t.Errorf("formatDistanceShort(%f) = %q, expected to contain %q",
-					tt.pixels, result, tt.contains)
-			}
-		})
-	}
-}
-
-func TestFormatDistanceShortUnitConversion(t *testing.T) {
-	// Test that very large distances use miles
-	result := formatDistanceShort(10000000) // Very large
-	if !strings.Contains(result, "mi") {
-		t.Errorf("Expected miles for large distance, got %q", result)
-	}
-
-	// Test that small distances use inches
-	result = formatDistanceShort(10) // Very small
-	if !strings.Contains(result, "in") {
-		t.Errorf("Expected inches for small distance, got %q", result)
-	}
-}
 
 func TestHeatmapColorConsistency(t *testing.T) {
 	// Verify colors are in increasing intensity order
@@ -315,12 +279,5 @@ func TestVersionVariable(t *testing.T) {
 	// Version should be set (either "dev" or a real version)
 	if Version == "" {
 		t.Error("Version should not be empty")
-	}
-}
-
-func TestAppStartedChannelExists(t *testing.T) {
-	// appStarted channel should be initialized
-	if appStarted == nil {
-		t.Error("appStarted channel should not be nil")
 	}
 }

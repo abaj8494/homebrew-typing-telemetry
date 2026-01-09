@@ -5,27 +5,56 @@ package main
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework Cocoa
+#cgo LDFLAGS: -framework Cocoa -framework UserNotifications
 
 #import <Cocoa/Cocoa.h>
 
-// We need to ensure we're on the main thread for all AppKit operations
-static void ensureMainThread() {
-    if (![NSThread isMainThread]) {
-        dispatch_sync(dispatch_get_main_queue(), ^{});
+// Modern alert dialog using NSAlert
+static int showAlert(const char* messageText, const char* informativeText, const char** buttons, int buttonCount) {
+    __block int result = 0;
+
+    void (^showAlertBlock)(void) = ^{
+        @autoreleasepool {
+            NSAlert *alert = [[NSAlert alloc] init];
+            [alert setMessageText:[NSString stringWithUTF8String:messageText]];
+            [alert setInformativeText:[NSString stringWithUTF8String:informativeText]];
+            [alert setAlertStyle:NSAlertStyleInformational];
+
+            for (int i = 0; i < buttonCount; i++) {
+                [alert addButtonWithTitle:[NSString stringWithUTF8String:buttons[i]]];
+            }
+
+            NSModalResponse response = [alert runModal];
+            result = (int)(response - NSAlertFirstButtonReturn);
+        }
+    };
+
+    if ([NSThread isMainThread]) {
+        showAlertBlock();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), showAlertBlock);
     }
+
+    return result;
 }
 
-// Check if we're on the main thread
-static bool isMainThread() {
-    return [NSThread isMainThread];
-}
-
-// Force a menubar refresh - helps when display configuration changes
-static void refreshMenuBar() {
+// Open URL in default browser
+static void openURL(const char* url) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Touch the status bar to force a redraw
-        [[NSApp mainMenu] update];
+        @autoreleasepool {
+            NSURL *nsurl = [NSURL URLWithString:[NSString stringWithUTF8String:url]];
+            [[NSWorkspace sharedWorkspace] openURL:nsurl];
+        }
+    });
+}
+
+// Open file in default application
+static void openFile(const char* path) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        @autoreleasepool {
+            NSURL *fileURL = [NSURL fileURLWithPath:[NSString stringWithUTF8String:path]];
+            [[NSWorkspace sharedWorkspace] openURL:fileURL];
+        }
     });
 }
 */
@@ -35,7 +64,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"os/signal"
 	"os/user"
 	"path/filepath"
@@ -45,30 +73,64 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unsafe"
 
+	"fyne.io/systray"
 	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
 	"github.com/aayushbajaj/typing-telemetry/internal/mousetracker"
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
-	"github.com/caseymrm/menuet"
 )
 
 var (
 	store          *storage.Store
-	appStarted     = make(chan struct{})
-	lastMenuTitle  string // Track last title to avoid unnecessary updates
+	lastMenuTitle  string
 	menuTitleMutex sync.Mutex
 )
 
+// Version is set at build time via ldflags: -X main.Version=$(VERSION)
+var Version = "dev"
+
+// Menu item references for dynamic updates
+var (
+	mTodayKeystrokes    *systray.MenuItem
+	mTodayMouse         *systray.MenuItem
+	mWeekKeystrokes     *systray.MenuItem
+	mWeekMouse          *systray.MenuItem
+	mShowKeystrokes     *systray.MenuItem
+	mShowWords          *systray.MenuItem
+	mShowClicks         *systray.MenuItem
+	mShowDistance       *systray.MenuItem
+	mDistanceFeet       *systray.MenuItem
+	mDistanceCars       *systray.MenuItem
+	mDistanceFields     *systray.MenuItem
+	mMouseTracking      *systray.MenuItem
+	mInertiaEnabled     *systray.MenuItem
+	mInertiaUltraFast   *systray.MenuItem
+	mInertiaVeryFast    *systray.MenuItem
+	mInertiaFast        *systray.MenuItem
+	mInertiaMedium      *systray.MenuItem
+	mInertiaSlow        *systray.MenuItem
+	mThreshold100       *systray.MenuItem
+	mThreshold150       *systray.MenuItem
+	mThreshold200       *systray.MenuItem
+	mThreshold250       *systray.MenuItem
+	mThreshold350       *systray.MenuItem
+	mAccelRate025       *systray.MenuItem
+	mAccelRate050       *systray.MenuItem
+	mAccelRate100       *systray.MenuItem
+	mAccelRate150       *systray.MenuItem
+	mAccelRate200       *systray.MenuItem
+	leaderboardItems    []*systray.MenuItem
+	mLeaderboardHeader  *systray.MenuItem
+	leaderboardSubmenus *systray.MenuItem
+)
+
 func init() {
-	// Ensure main goroutine runs on the main OS thread (required for macOS UI)
 	runtime.LockOSThread()
 }
 
 func main() {
-	// Ensure we're on main thread
-	C.ensureMainThread()
-
 	// Ensure HOME is set (needed when launched via launchctl/open)
 	if os.Getenv("HOME") == "" {
 		if u, err := user.Current(); err == nil {
@@ -112,13 +174,11 @@ func main() {
 	defer keylogger.Stop()
 
 	// Process keystrokes in background
-	// Track word boundaries: space (49), return (36), tab (48) indicate end of word
 	go func() {
 		for keycode := range keystrokeChan {
 			if err := store.RecordKeystroke(keycode); err != nil {
 				log.Printf("Failed to record keystroke: %v", err)
 			}
-			// Detect word boundaries - increment word count when word-ending keys are pressed
 			if isWordBoundary(keycode) {
 				date := time.Now().Format("2006-01-02")
 				if err := store.IncrementWordCount(date); err != nil {
@@ -128,44 +188,37 @@ func main() {
 		}
 	}()
 
-	// Start mouse tracker in background if enabled (uses same accessibility permissions)
+	// Start mouse tracker if enabled
 	mouseTrackingEnabled := store.IsMouseTrackingEnabled()
 	if mouseTrackingEnabled {
 		mouseChan, clickChan, err := mousetracker.Start()
 		if err != nil {
 			log.Printf("Warning: Failed to start mouse tracker: %v", err)
-			// Continue without mouse tracking - keylogger is more important
 		} else {
 			defer mousetracker.Stop()
 
-			// Set initial midnight position for today
 			pos := mousetracker.GetCurrentPosition()
 			date := time.Now().Format("2006-01-02")
 			if err := store.SetMidnightPosition(date, pos.X, pos.Y); err != nil {
 				log.Printf("Failed to set midnight position: %v", err)
 			}
 
-			// Process mouse movements in background
 			go func() {
 				currentDate := time.Now().Format("2006-01-02")
 				for movement := range mouseChan {
-					// Check if we've crossed midnight
 					newDate := time.Now().Format("2006-01-02")
 					if newDate != currentDate {
-						// New day - reset and set new midnight position
 						currentDate = newDate
 						if err := store.SetMidnightPosition(currentDate, movement.X, movement.Y); err != nil {
 							log.Printf("Failed to set midnight position: %v", err)
 						}
 					}
-
 					if err := store.RecordMouseMovement(movement.X, movement.Y, movement.Distance); err != nil {
 						log.Printf("Failed to record mouse movement: %v", err)
 					}
 				}
 			}()
 
-			// Process mouse clicks in background
 			go func() {
 				for range clickChan {
 					if err := store.RecordMouseClick(); err != nil {
@@ -203,37 +256,432 @@ func main() {
 	go func() {
 		<-sigChan
 		log.Println("Shutting down...")
-		os.Exit(0)
+		systray.Quit()
 	}()
 
-	// Configure menu bar app
-	app := menuet.App()
-	app.Label = "com.typtel.menubar"
-	app.Children = menuItems
+	log.Println("Menu bar app starting...")
 
-	// Start the update loop AFTER app.RunApplication starts
-	// Use a timer to delay initial update
+	// Run the systray app
+	systray.Run(onReady, onExit)
+}
+
+func onReady() {
+	// Set initial title
+	systray.SetTitle("⌨️")
+	systray.SetTooltip("Typing Telemetry")
+
+	// Build the menu structure
+	buildMenu()
+
+	// Start update loop
 	go func() {
-		// Wait for app to fully start
-		time.Sleep(3 * time.Second)
-		close(appStarted)
-
-		// Now we can safely update
+		// Initial update after a short delay
+		time.Sleep(1 * time.Second)
 		updateMenuBarTitle()
+		updateStatsDisplay()
 
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
 
 		for range ticker.C {
 			updateMenuBarTitle()
+			updateStatsDisplay()
+		}
+	}()
+}
+
+func onExit() {
+	log.Println("Systray exiting...")
+}
+
+func buildMenu() {
+	// Today's stats
+	mTodayKeystrokes = systray.AddMenuItem("Today: -- keystrokes (-- words)", "")
+	mTodayKeystrokes.Disable()
+	mTodayMouse = systray.AddMenuItem("Today: 🖱️ -- clicks, -- distance", "")
+	mTodayMouse.Disable()
+
+	systray.AddSeparator()
+
+	// Week stats
+	mWeekKeystrokes = systray.AddMenuItem("This Week: -- keystrokes (-- words)", "")
+	mWeekKeystrokes.Disable()
+	mWeekMouse = systray.AddMenuItem("This Week: 🖱️ -- clicks, -- distance", "")
+	mWeekMouse.Disable()
+
+	systray.AddSeparator()
+
+	// View Charts
+	mCharts := systray.AddMenuItem("View Charts", "Open statistics charts")
+	go func() {
+		for range mCharts.ClickedCh {
+			openCharts()
 		}
 	}()
 
-	log.Println("Menu bar app starting...")
+	// Leaderboard submenu
+	leaderboardSubmenus = systray.AddMenuItem("🏆 Stillness Leaderboard", "Days with least mouse movement")
+	mLeaderboardHeader = leaderboardSubmenus.AddSubMenuItem("🧘 Days You Didn't Move The Mouse", "")
+	mLeaderboardHeader.Disable()
+	// Pre-allocate leaderboard slots
+	for i := 0; i < 10; i++ {
+		item := leaderboardSubmenus.AddSubMenuItem("", "")
+		item.Hide()
+		leaderboardItems = append(leaderboardItems, item)
+	}
+	go func() {
+		for range leaderboardSubmenus.ClickedCh {
+			showLeaderboard()
+		}
+	}()
 
-	// This blocks and runs the macOS event loop
-	// All UI must happen from here on the main thread
-	app.RunApplication()
+	systray.AddSeparator()
+
+	// Settings submenu
+	mSettings := systray.AddMenuItem("⚙️ Settings", "Configure display options")
+
+	// Menu Bar Display section
+	mDisplayLabel := mSettings.AddSubMenuItem("Menu Bar Display:", "")
+	mDisplayLabel.Disable()
+
+	settings := store.GetMenubarSettings()
+
+	mShowKeystrokes = mSettings.AddSubMenuItemCheckbox("Show Keystrokes", "", settings.ShowKeystrokes)
+	mShowWords = mSettings.AddSubMenuItemCheckbox("Show Words", "", settings.ShowWords)
+	mShowClicks = mSettings.AddSubMenuItemCheckbox("Show Mouse Clicks", "", settings.ShowClicks)
+	mShowDistance = mSettings.AddSubMenuItemCheckbox("Show Mouse Distance", "", settings.ShowDistance)
+
+	// Distance Unit submenu
+	mDistanceUnit := mSettings.AddSubMenuItem("   Distance Unit", "")
+	currentUnit := store.GetDistanceUnit()
+	mDistanceFeet = mDistanceUnit.AddSubMenuItemCheckbox("Feet / Miles", "", currentUnit == storage.DistanceUnitFeet)
+	mDistanceCars = mDistanceUnit.AddSubMenuItemCheckbox("Cars (15ft each)", "", currentUnit == storage.DistanceUnitCars)
+	mDistanceFields = mDistanceUnit.AddSubMenuItemCheckbox("Frisbee Fields (330ft)", "", currentUnit == storage.DistanceUnitFrisbee)
+
+	mSettings.AddSubMenuItem("", "").Disable() // Separator
+
+	// Tracking section
+	mTrackingLabel := mSettings.AddSubMenuItem("Tracking:", "")
+	mTrackingLabel.Disable()
+
+	mouseTrackingEnabled := store.IsMouseTrackingEnabled()
+	mMouseTracking = mSettings.AddSubMenuItemCheckbox("Enable Mouse Distance", "", mouseTrackingEnabled)
+
+	mSettings.AddSubMenuItem("", "").Disable() // Separator
+
+	// Inertia section
+	mInertiaLabel := mSettings.AddSubMenuItem("⚡ Inertia (Key Acceleration):", "")
+	mInertiaLabel.Disable()
+
+	inertiaSettings := store.GetInertiaSettings()
+	mInertiaEnabled = mSettings.AddSubMenuItemCheckbox("Enable Inertia", "", inertiaSettings.Enabled)
+
+	// Max Speed submenu
+	mMaxSpeed := mSettings.AddSubMenuItem("   Max Speed", "")
+	mInertiaUltraFast = mMaxSpeed.AddSubMenuItemCheckbox("Ultra Fast (~140 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedUltraFast)
+	mInertiaVeryFast = mMaxSpeed.AddSubMenuItemCheckbox("Very Fast (~125 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedVeryFast)
+	mInertiaFast = mMaxSpeed.AddSubMenuItemCheckbox("Fast (~83 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedFast)
+	mInertiaMedium = mMaxSpeed.AddSubMenuItemCheckbox("Medium (~50 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedMedium)
+	mInertiaSlow = mMaxSpeed.AddSubMenuItemCheckbox("Slow (~20 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedSlow)
+
+	// Threshold submenu
+	mThreshold := mSettings.AddSubMenuItem("   Threshold (ms)", "")
+	mThreshold100 = mThreshold.AddSubMenuItemCheckbox("100ms (instant)", "", inertiaSettings.Threshold == 100)
+	mThreshold150 = mThreshold.AddSubMenuItemCheckbox("150ms (fast)", "", inertiaSettings.Threshold == 150)
+	mThreshold200 = mThreshold.AddSubMenuItemCheckbox("200ms (default)", "", inertiaSettings.Threshold == 200)
+	mThreshold250 = mThreshold.AddSubMenuItemCheckbox("250ms (slow)", "", inertiaSettings.Threshold == 250)
+	mThreshold350 = mThreshold.AddSubMenuItemCheckbox("350ms (very slow)", "", inertiaSettings.Threshold == 350)
+
+	// Acceleration Rate submenu
+	mAccelRate := mSettings.AddSubMenuItem("   Acceleration Rate", "")
+	mAccelRate025 = mAccelRate.AddSubMenuItemCheckbox("0.25x (very gentle)", "", inertiaSettings.AccelRate == 0.25)
+	mAccelRate050 = mAccelRate.AddSubMenuItemCheckbox("0.5x (gentle)", "", inertiaSettings.AccelRate == 0.5)
+	mAccelRate100 = mAccelRate.AddSubMenuItemCheckbox("1.0x (default)", "", inertiaSettings.AccelRate == 1.0)
+	mAccelRate150 = mAccelRate.AddSubMenuItemCheckbox("1.5x (faster)", "", inertiaSettings.AccelRate == 1.5)
+	mAccelRate200 = mAccelRate.AddSubMenuItemCheckbox("2.0x (aggressive)", "", inertiaSettings.AccelRate == 2.0)
+
+	mSettings.AddSubMenuItem("", "").Disable() // Separator
+
+	// Debug section
+	mDebugLabel := mSettings.AddSubMenuItem("🔧 Debug:", "")
+	mDebugLabel.Disable()
+	mDisplayInfo := mSettings.AddSubMenuItem("   Show Display Info", "")
+	go func() {
+		for range mDisplayInfo.ClickedCh {
+			showDisplayDebugInfo()
+		}
+	}()
+
+	// About
+	mAbout := systray.AddMenuItem("About", "About Typing Telemetry")
+	go func() {
+		for range mAbout.ClickedCh {
+			showAbout()
+		}
+	}()
+
+	// Quit
+	mQuit := systray.AddMenuItem("Quit", "Quit application")
+	go func() {
+		for range mQuit.ClickedCh {
+			quit()
+		}
+	}()
+
+	// Start click handlers for settings
+	go handleSettingsClicks()
+}
+
+func handleSettingsClicks() {
+	for {
+		select {
+		case <-mShowKeystrokes.ClickedCh:
+			s := store.GetMenubarSettings()
+			s.ShowKeystrokes = !s.ShowKeystrokes
+			store.SaveMenubarSettings(s)
+			if s.ShowKeystrokes {
+				mShowKeystrokes.Check()
+			} else {
+				mShowKeystrokes.Uncheck()
+			}
+			updateMenuBarTitle()
+
+		case <-mShowWords.ClickedCh:
+			s := store.GetMenubarSettings()
+			s.ShowWords = !s.ShowWords
+			store.SaveMenubarSettings(s)
+			if s.ShowWords {
+				mShowWords.Check()
+			} else {
+				mShowWords.Uncheck()
+			}
+			updateMenuBarTitle()
+
+		case <-mShowClicks.ClickedCh:
+			s := store.GetMenubarSettings()
+			s.ShowClicks = !s.ShowClicks
+			store.SaveMenubarSettings(s)
+			if s.ShowClicks {
+				mShowClicks.Check()
+			} else {
+				mShowClicks.Uncheck()
+			}
+			updateMenuBarTitle()
+
+		case <-mShowDistance.ClickedCh:
+			s := store.GetMenubarSettings()
+			s.ShowDistance = !s.ShowDistance
+			store.SaveMenubarSettings(s)
+			if s.ShowDistance {
+				mShowDistance.Check()
+			} else {
+				mShowDistance.Uncheck()
+			}
+			updateMenuBarTitle()
+
+		case <-mDistanceFeet.ClickedCh:
+			store.SetDistanceUnit(storage.DistanceUnitFeet)
+			mDistanceFeet.Check()
+			mDistanceCars.Uncheck()
+			mDistanceFields.Uncheck()
+			updateMenuBarTitle()
+
+		case <-mDistanceCars.ClickedCh:
+			store.SetDistanceUnit(storage.DistanceUnitCars)
+			mDistanceFeet.Uncheck()
+			mDistanceCars.Check()
+			mDistanceFields.Uncheck()
+			updateMenuBarTitle()
+
+		case <-mDistanceFields.ClickedCh:
+			store.SetDistanceUnit(storage.DistanceUnitFrisbee)
+			mDistanceFeet.Uncheck()
+			mDistanceCars.Uncheck()
+			mDistanceFields.Check()
+			updateMenuBarTitle()
+
+		case <-mMouseTracking.ClickedCh:
+			enabled := store.IsMouseTrackingEnabled()
+			store.SetMouseTrackingEnabled(!enabled)
+			if !enabled {
+				mMouseTracking.Check()
+			} else {
+				mMouseTracking.Uncheck()
+			}
+			showAlertDialog("Mouse Distance "+map[bool]string{true: "Disabled", false: "Enabled"}[enabled],
+				"Restart the app for changes to take effect.",
+				[]string{"OK"})
+
+		case <-mInertiaEnabled.ClickedCh:
+			s := store.GetInertiaSettings()
+			newEnabled := !s.Enabled
+			store.SetInertiaEnabled(newEnabled)
+			if newEnabled {
+				mInertiaEnabled.Check()
+				cfg := inertia.Config{
+					Enabled:   true,
+					MaxSpeed:  s.MaxSpeed,
+					Threshold: s.Threshold,
+					AccelRate: s.AccelRate,
+				}
+				inertia.Start(cfg)
+			} else {
+				mInertiaEnabled.Uncheck()
+				inertia.Stop()
+			}
+			showAlertDialog("Inertia "+map[bool]string{true: "Enabled", false: "Disabled"}[newEnabled],
+				"Key acceleration is now "+map[bool]string{true: "active", false: "inactive"}[newEnabled]+".\n\nHold any key to accelerate repeat speed.\nPressing any other key resets acceleration.",
+				[]string{"OK"})
+
+		case <-mInertiaUltraFast.ClickedCh:
+			store.SetInertiaMaxSpeed(storage.InertiaSpeedUltraFast)
+			updateInertiaSpeedChecks(storage.InertiaSpeedUltraFast)
+			updateInertiaConfig()
+
+		case <-mInertiaVeryFast.ClickedCh:
+			store.SetInertiaMaxSpeed(storage.InertiaSpeedVeryFast)
+			updateInertiaSpeedChecks(storage.InertiaSpeedVeryFast)
+			updateInertiaConfig()
+
+		case <-mInertiaFast.ClickedCh:
+			store.SetInertiaMaxSpeed(storage.InertiaSpeedFast)
+			updateInertiaSpeedChecks(storage.InertiaSpeedFast)
+			updateInertiaConfig()
+
+		case <-mInertiaMedium.ClickedCh:
+			store.SetInertiaMaxSpeed(storage.InertiaSpeedMedium)
+			updateInertiaSpeedChecks(storage.InertiaSpeedMedium)
+			updateInertiaConfig()
+
+		case <-mInertiaSlow.ClickedCh:
+			store.SetInertiaMaxSpeed(storage.InertiaSpeedSlow)
+			updateInertiaSpeedChecks(storage.InertiaSpeedSlow)
+			updateInertiaConfig()
+
+		case <-mThreshold100.ClickedCh:
+			store.SetInertiaThreshold(100)
+			updateThresholdChecks(100)
+			updateInertiaConfig()
+
+		case <-mThreshold150.ClickedCh:
+			store.SetInertiaThreshold(150)
+			updateThresholdChecks(150)
+			updateInertiaConfig()
+
+		case <-mThreshold200.ClickedCh:
+			store.SetInertiaThreshold(200)
+			updateThresholdChecks(200)
+			updateInertiaConfig()
+
+		case <-mThreshold250.ClickedCh:
+			store.SetInertiaThreshold(250)
+			updateThresholdChecks(250)
+			updateInertiaConfig()
+
+		case <-mThreshold350.ClickedCh:
+			store.SetInertiaThreshold(350)
+			updateThresholdChecks(350)
+			updateInertiaConfig()
+
+		case <-mAccelRate025.ClickedCh:
+			store.SetInertiaAccelRate(0.25)
+			updateAccelRateChecks(0.25)
+			updateInertiaConfig()
+
+		case <-mAccelRate050.ClickedCh:
+			store.SetInertiaAccelRate(0.5)
+			updateAccelRateChecks(0.5)
+			updateInertiaConfig()
+
+		case <-mAccelRate100.ClickedCh:
+			store.SetInertiaAccelRate(1.0)
+			updateAccelRateChecks(1.0)
+			updateInertiaConfig()
+
+		case <-mAccelRate150.ClickedCh:
+			store.SetInertiaAccelRate(1.5)
+			updateAccelRateChecks(1.5)
+			updateInertiaConfig()
+
+		case <-mAccelRate200.ClickedCh:
+			store.SetInertiaAccelRate(2.0)
+			updateAccelRateChecks(2.0)
+			updateInertiaConfig()
+		}
+	}
+}
+
+func updateInertiaSpeedChecks(speed string) {
+	mInertiaUltraFast.Uncheck()
+	mInertiaVeryFast.Uncheck()
+	mInertiaFast.Uncheck()
+	mInertiaMedium.Uncheck()
+	mInertiaSlow.Uncheck()
+	switch speed {
+	case storage.InertiaSpeedUltraFast:
+		mInertiaUltraFast.Check()
+	case storage.InertiaSpeedVeryFast:
+		mInertiaVeryFast.Check()
+	case storage.InertiaSpeedFast:
+		mInertiaFast.Check()
+	case storage.InertiaSpeedMedium:
+		mInertiaMedium.Check()
+	case storage.InertiaSpeedSlow:
+		mInertiaSlow.Check()
+	}
+}
+
+func updateThresholdChecks(threshold int) {
+	mThreshold100.Uncheck()
+	mThreshold150.Uncheck()
+	mThreshold200.Uncheck()
+	mThreshold250.Uncheck()
+	mThreshold350.Uncheck()
+	switch threshold {
+	case 100:
+		mThreshold100.Check()
+	case 150:
+		mThreshold150.Check()
+	case 200:
+		mThreshold200.Check()
+	case 250:
+		mThreshold250.Check()
+	case 350:
+		mThreshold350.Check()
+	}
+}
+
+func updateAccelRateChecks(rate float64) {
+	mAccelRate025.Uncheck()
+	mAccelRate050.Uncheck()
+	mAccelRate100.Uncheck()
+	mAccelRate150.Uncheck()
+	mAccelRate200.Uncheck()
+	switch rate {
+	case 0.25:
+		mAccelRate025.Check()
+	case 0.5:
+		mAccelRate050.Check()
+	case 1.0:
+		mAccelRate100.Check()
+	case 1.5:
+		mAccelRate150.Check()
+	case 2.0:
+		mAccelRate200.Check()
+	}
+}
+
+func updateInertiaConfig() {
+	s := store.GetInertiaSettings()
+	if s.Enabled {
+		cfg := inertia.Config{
+			Enabled:   true,
+			MaxSpeed:  s.MaxSpeed,
+			Threshold: s.Threshold,
+			AccelRate: s.AccelRate,
+		}
+		inertia.UpdateConfig(cfg)
+	}
 }
 
 func updateMenuBarTitle() {
@@ -243,13 +691,9 @@ func updateMenuBarTitle() {
 		return
 	}
 
-	// Get settings
 	settings := store.GetMenubarSettings()
-
-	// Get mouse stats
 	mouseStats, _ := store.GetTodayMouseStats()
 
-	// Build title based on settings
 	var parts []string
 
 	if settings.ShowKeystrokes {
@@ -273,30 +717,19 @@ func updateMenuBarTitle() {
 	setMenuTitle(title)
 }
 
-// setMenuTitle updates the menu title only if it has changed
-// This prevents unnecessary UI updates that can cause flickering
 func setMenuTitle(title string) {
 	menuTitleMutex.Lock()
 	defer menuTitleMutex.Unlock()
 
-	// Skip update if title hasn't changed
 	if title == lastMenuTitle {
 		return
 	}
 
 	lastMenuTitle = title
-
-	// Use dispatch_async to ensure UI update happens on main thread
-	// The menuet library should handle this, but we add extra safety
-	menuet.App().SetMenuState(&menuet.MenuState{
-		Title: title,
-	})
+	systray.SetTitle(title)
 }
 
-// Version is set at build time via ldflags: -X main.Version=$(VERSION)
-var Version = "dev"
-
-func menuItems() []menuet.MenuItem {
+func updateStatsDisplay() {
 	stats, _ := store.GetTodayStats()
 	weekStats, _ := store.GetWeekStats()
 	mouseStats, _ := store.GetTodayMouseStats()
@@ -332,86 +765,72 @@ func menuItems() []menuet.MenuItem {
 		todayClicks = mouseStats.ClickCount
 	}
 
-	return []menuet.MenuItem{
-		{
-			Text: fmt.Sprintf("Today: %s keystrokes (%s words)", formatAbsolute(keystrokeCount), formatAbsolute(todayWords)),
-		},
-		{
-			Text: fmt.Sprintf("Today: 🖱️ %s clicks, %s distance", formatAbsolute(todayClicks), formatDistance(todayMouseDistance)),
-		},
-		{
-			Type: menuet.Separator,
-		},
-		{
-			Text: fmt.Sprintf("This Week: %s keystrokes (%s words)", formatAbsolute(weekKeystrokes), formatAbsolute(weekWords)),
-		},
-		{
-			Text: fmt.Sprintf("This Week: 🖱️ %s clicks, %s distance", formatAbsolute(weekClicks), formatDistance(weekMouseDistance)),
-		},
-		{
-			Type: menuet.Separator,
-		},
-		{
-			Text:    "View Charts",
-			Clicked: openCharts,
-		},
-		{
-			Text:     "🏆 Stillness Leaderboard",
-			Clicked:  showLeaderboard,
-			Children: leaderboardMenuItems,
-		},
-		{
-			Type: menuet.Separator,
-		},
-		{
-			Text:     "⚙️ Settings",
-			Children: settingsMenuItems,
-		},
-		{
-			Text:    "About",
-			Clicked: showAbout,
-		},
-		{
-			Text:    "Quit",
-			Clicked: quit,
-		},
+	// Update menu items
+	mTodayKeystrokes.SetTitle(fmt.Sprintf("Today: %s keystrokes (%s words)", formatAbsolute(keystrokeCount), formatAbsolute(todayWords)))
+	mTodayMouse.SetTitle(fmt.Sprintf("Today: 🖱️ %s clicks, %s distance", formatAbsolute(todayClicks), formatDistance(todayMouseDistance)))
+	mWeekKeystrokes.SetTitle(fmt.Sprintf("This Week: %s keystrokes (%s words)", formatAbsolute(weekKeystrokes), formatAbsolute(weekWords)))
+	mWeekMouse.SetTitle(fmt.Sprintf("This Week: 🖱️ %s clicks, %s distance", formatAbsolute(weekClicks), formatDistance(weekMouseDistance)))
+
+	// Update leaderboard
+	updateLeaderboard()
+}
+
+func updateLeaderboard() {
+	entries, err := store.GetMouseLeaderboard(10)
+	if err != nil || len(entries) == 0 {
+		for _, item := range leaderboardItems {
+			item.Hide()
+		}
+		return
+	}
+
+	for i, item := range leaderboardItems {
+		if i < len(entries) {
+			entry := entries[i]
+			t, _ := time.Parse("2006-01-02", entry.Date)
+			medal := ""
+			switch entry.Rank {
+			case 1:
+				medal = "🥇 "
+			case 2:
+				medal = "🥈 "
+			case 3:
+				medal = "🥉 "
+			}
+			item.SetTitle(fmt.Sprintf("%s#%d: %s - %s", medal, entry.Rank, t.Format("Jan 2, 2006"), formatDistance(entry.TotalDistance)))
+			item.Show()
+		} else {
+			item.Hide()
+		}
 	}
 }
 
 func showAbout() {
-	// Open GitHub page in browser
 	go func() {
-		cmd := exec.Command("open", "https://github.com/abaj8494/typing-telemetry")
-		cmd.Run()
+		openURLNative("https://github.com/abaj8494/typing-telemetry")
 	}()
 
-	// Show alert with version info
-	menuet.App().Alert(menuet.Alert{
-		MessageText:     "Typing Telemetry",
-		InformativeText: fmt.Sprintf("Version %s\n\nTrack your keystrokes and typing speed.\n\nGitHub: github.com/abaj8494/typing-telemetry", Version),
-		Buttons:         []string{"OK"},
-	})
+	showAlertDialog("Typing Telemetry",
+		fmt.Sprintf("Version %s\n\nTrack your keystrokes and typing speed.\n\nGitHub: github.com/abaj8494/typing-telemetry", Version),
+		[]string{"OK"})
 }
 
 func quit() {
-	response := menuet.App().Alert(menuet.Alert{
-		MessageText:     "Quit Typing Telemetry",
-		InformativeText: "Choose how to quit:",
-		Buttons:         []string{"Cancel", "Hide Menu Bar Only", "Stop Tracking & Quit"},
-	})
+	response := showAlertDialog("Quit Typing Telemetry",
+		"Choose how to quit:",
+		[]string{"Cancel", "Hide Menu Bar Only", "Stop Tracking & Quit"})
 
-	switch response.Button {
+	switch response {
 	case 0: // Cancel
 		return
 	case 1: // Hide Menu Bar Only
-		// Just exit the menubar app, keylogger keeps running in the background
-		os.Exit(0)
+		systray.Quit()
 	case 2: // Stop Tracking & Quit
 		keylogger.Stop()
 		if store != nil {
 			store.Close()
 		}
-		os.Exit(0)
+		systray.Quit()
 	}
 }
 
@@ -423,229 +842,6 @@ func showPermissionAlert() {
 	fmt.Println("2. Click the lock to make changes")
 	fmt.Println("3. Add this application to the list")
 	fmt.Println("4. Restart the application")
-}
-
-func getLogDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	logDir := filepath.Join(home, ".local", "share", "typtel", "logs")
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		return "", err
-	}
-	return logDir, nil
-}
-
-// formatAbsolute formats a number with comma separators for readability
-func formatAbsolute(n int64) string {
-	// Convert to string and add commas
-	s := fmt.Sprintf("%d", n)
-	if n < 0 {
-		return s
-	}
-
-	// Add commas every 3 digits from the right
-	result := ""
-	for i, c := range s {
-		if i > 0 && (len(s)-i)%3 == 0 {
-			result += ","
-		}
-		result += string(c)
-	}
-	return result
-}
-
-// formatDistance formats mouse distance based on the selected unit setting
-// Pixels are converted to real-world units using the average display PPI
-func formatDistance(pixels float64) string {
-	// Convert pixels to feet using actual display PPI
-	feet := mousetracker.PixelsToFeet(pixels)
-
-	unit := store.GetDistanceUnit()
-	switch unit {
-	case storage.DistanceUnitCars:
-		// Average car length ~15 feet
-		cars := feet / 15.0
-		if cars >= 1000 {
-			return fmt.Sprintf("%.1fk cars", cars/1000)
-		} else if cars >= 1 {
-			return fmt.Sprintf("%.0f cars", cars)
-		}
-		return fmt.Sprintf("%.1f cars", cars)
-
-	case storage.DistanceUnitFrisbee:
-		// Ultimate frisbee field = 110 yards = 330 feet
-		fields := feet / 330.0
-		if fields >= 100 {
-			return fmt.Sprintf("%.0f fields", fields)
-		} else if fields >= 1 {
-			return fmt.Sprintf("%.1f fields", fields)
-		}
-		return fmt.Sprintf("%.2f fields", fields)
-
-	default: // feet/miles
-		if feet >= 5280 { // 1 mile = 5280 feet
-			return fmt.Sprintf("%.1fmi", feet/5280)
-		} else if feet >= 1 {
-			return fmt.Sprintf("%.0fft", feet)
-		}
-		inches := feet * 12
-		return fmt.Sprintf("%.0fin", inches)
-	}
-}
-
-// formatDistanceShort formats mouse distance for compact display
-func formatDistanceShort(pixels float64) string {
-	feet := mousetracker.PixelsToFeet(pixels)
-	if feet >= 5280 {
-		return fmt.Sprintf("%.1fmi", feet/5280)
-	} else if feet >= 1 {
-		return fmt.Sprintf("%.0fft", feet)
-	}
-	return fmt.Sprintf("%.0fin", feet*12)
-}
-
-func chartMenuItems() []menuet.MenuItem {
-	return []menuet.MenuItem{
-		{
-			Text:    "Open Charts",
-			Clicked: openCharts,
-		},
-	}
-}
-
-func settingsMenuItems() []menuet.MenuItem {
-	settings := store.GetMenubarSettings()
-	mouseTrackingEnabled := store.IsMouseTrackingEnabled()
-	inertiaSettings := store.GetInertiaSettings()
-
-	checkmark := func(enabled bool) string {
-		if enabled {
-			return "✓ "
-		}
-		return "   "
-	}
-
-	return []menuet.MenuItem{
-		{
-			Text: "Menu Bar Display:",
-		},
-		{
-			Text: checkmark(settings.ShowKeystrokes) + "Show Keystrokes",
-			Clicked: func() {
-				s := store.GetMenubarSettings()
-				s.ShowKeystrokes = !s.ShowKeystrokes
-				store.SaveMenubarSettings(s)
-				updateMenuBarTitle()
-			},
-		},
-		{
-			Text: checkmark(settings.ShowWords) + "Show Words",
-			Clicked: func() {
-				s := store.GetMenubarSettings()
-				s.ShowWords = !s.ShowWords
-				store.SaveMenubarSettings(s)
-				updateMenuBarTitle()
-			},
-		},
-		{
-			Text: checkmark(settings.ShowClicks) + "Show Mouse Clicks",
-			Clicked: func() {
-				s := store.GetMenubarSettings()
-				s.ShowClicks = !s.ShowClicks
-				store.SaveMenubarSettings(s)
-				updateMenuBarTitle()
-			},
-		},
-		{
-			Text: checkmark(settings.ShowDistance) + "Show Mouse Distance",
-			Clicked: func() {
-				s := store.GetMenubarSettings()
-				s.ShowDistance = !s.ShowDistance
-				store.SaveMenubarSettings(s)
-				updateMenuBarTitle()
-			},
-		},
-		{
-			Text:     "   Distance Unit",
-			Children: distanceUnitMenuItems,
-		},
-		{
-			Type: menuet.Separator,
-		},
-		{
-			Text: "Tracking:",
-		},
-		{
-			Text: checkmark(mouseTrackingEnabled) + "Enable Mouse Distance",
-			Clicked: func() {
-				enabled := store.IsMouseTrackingEnabled()
-				store.SetMouseTrackingEnabled(!enabled)
-				// Show restart message
-				menuet.App().Alert(menuet.Alert{
-					MessageText:     "Mouse Distance " + map[bool]string{true: "Disabled", false: "Enabled"}[enabled],
-					InformativeText: "Restart the app for changes to take effect.",
-					Buttons:         []string{"OK"},
-				})
-			},
-		},
-		{
-			Type: menuet.Separator,
-		},
-		{
-			Text: "⚡ Inertia (Key Acceleration):",
-		},
-		{
-			Text: checkmark(inertiaSettings.Enabled) + "Enable Inertia",
-			Clicked: func() {
-				s := store.GetInertiaSettings()
-				newEnabled := !s.Enabled
-				store.SetInertiaEnabled(newEnabled)
-
-				// Update inertia system in real-time
-				if newEnabled {
-					cfg := inertia.Config{
-						Enabled:   true,
-						MaxSpeed:  s.MaxSpeed,
-						Threshold: s.Threshold,
-						AccelRate: s.AccelRate,
-					}
-					inertia.Start(cfg)
-				} else {
-					inertia.Stop()
-				}
-
-				menuet.App().Alert(menuet.Alert{
-					MessageText:     "Inertia " + map[bool]string{true: "Enabled", false: "Disabled"}[newEnabled],
-					InformativeText: "Key acceleration is now " + map[bool]string{true: "active", false: "inactive"}[newEnabled] + ".\n\nHold any key to accelerate repeat speed.\nPressing any other key resets acceleration.",
-					Buttons:         []string{"OK"},
-				})
-			},
-		},
-		{
-			Text:     "   Max Speed",
-			Children: inertiaMaxSpeedMenuItems,
-		},
-		{
-			Text:     "   Threshold (ms)",
-			Children: inertiaThresholdMenuItems,
-		},
-		{
-			Text:     "   Acceleration Rate",
-			Children: inertiaAccelRateMenuItems,
-		},
-		{
-			Type: menuet.Separator,
-		},
-		{
-			Text: "🔧 Debug:",
-		},
-		{
-			Text:    "   Show Display Info",
-			Clicked: showDisplayDebugInfo,
-		},
-	}
 }
 
 func showDisplayDebugInfo() {
@@ -660,258 +856,109 @@ func showDisplayDebugInfo() {
 		info += fmt.Sprintf("Mouse distance is calculated using %.1f pixels per inch.", ppi)
 	}
 
-	menuet.App().Alert(menuet.Alert{
-		MessageText:     "Display Information",
-		InformativeText: info,
-		Buttons:         []string{"OK"},
-	})
+	showAlertDialog("Display Information", info, []string{"OK"})
 }
 
-// inertiaMaxSpeedMenuItems returns the max speed selection submenu
-func inertiaMaxSpeedMenuItems() []menuet.MenuItem {
-	currentSpeed := store.GetInertiaSettings().MaxSpeed
+// Native alert dialog using Cocoa
+func showAlertDialog(messageText, informativeText string, buttons []string) int {
+	cMessage := C.CString(messageText)
+	cInfo := C.CString(informativeText)
+	defer C.free(unsafe.Pointer(cMessage))
+	defer C.free(unsafe.Pointer(cInfo))
 
-	checkmark := func(speed string) string {
-		if currentSpeed == speed {
-			return "✓ "
-		}
-		return "   "
+	cButtons := make([]*C.char, len(buttons))
+	for i, b := range buttons {
+		cButtons[i] = C.CString(b)
+		defer C.free(unsafe.Pointer(cButtons[i]))
 	}
 
-	return []menuet.MenuItem{
-		{
-			Text: checkmark(storage.InertiaSpeedUltraFast) + "Ultra Fast (~140 keys/sec)",
-			Clicked: func() {
-				store.SetInertiaMaxSpeed(storage.InertiaSpeedUltraFast)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(storage.InertiaSpeedVeryFast) + "Very Fast (~125 keys/sec)",
-			Clicked: func() {
-				store.SetInertiaMaxSpeed(storage.InertiaSpeedVeryFast)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(storage.InertiaSpeedFast) + "Fast (~83 keys/sec)",
-			Clicked: func() {
-				store.SetInertiaMaxSpeed(storage.InertiaSpeedFast)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(storage.InertiaSpeedMedium) + "Medium (~50 keys/sec)",
-			Clicked: func() {
-				store.SetInertiaMaxSpeed(storage.InertiaSpeedMedium)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(storage.InertiaSpeedSlow) + "Slow (~20 keys/sec)",
-			Clicked: func() {
-				store.SetInertiaMaxSpeed(storage.InertiaSpeedSlow)
-				updateInertiaConfig()
-			},
-		},
-	}
+	return int(C.showAlert(cMessage, cInfo, &cButtons[0], C.int(len(buttons))))
 }
 
-// inertiaThresholdMenuItems returns the threshold selection submenu
-func inertiaThresholdMenuItems() []menuet.MenuItem {
-	currentThreshold := store.GetInertiaSettings().Threshold
-
-	checkmark := func(threshold int) string {
-		if currentThreshold == threshold {
-			return "✓ "
-		}
-		return "   "
-	}
-
-	return []menuet.MenuItem{
-		{
-			Text: checkmark(100) + "100ms (instant)",
-			Clicked: func() {
-				store.SetInertiaThreshold(100)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(150) + "150ms (fast)",
-			Clicked: func() {
-				store.SetInertiaThreshold(150)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(200) + "200ms (default)",
-			Clicked: func() {
-				store.SetInertiaThreshold(200)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(250) + "250ms (slow)",
-			Clicked: func() {
-				store.SetInertiaThreshold(250)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(350) + "350ms (very slow)",
-			Clicked: func() {
-				store.SetInertiaThreshold(350)
-				updateInertiaConfig()
-			},
-		},
-	}
+// Open URL in default browser using native macOS API
+func openURLNative(url string) {
+	cURL := C.CString(url)
+	defer C.free(unsafe.Pointer(cURL))
+	C.openURL(cURL)
 }
 
-// inertiaAccelRateMenuItems returns the acceleration rate selection submenu
-func inertiaAccelRateMenuItems() []menuet.MenuItem {
-	currentRate := store.GetInertiaSettings().AccelRate
-
-	checkmark := func(rate float64) string {
-		if currentRate == rate {
-			return "✓ "
-		}
-		return "   "
-	}
-
-	return []menuet.MenuItem{
-		{
-			Text: checkmark(0.25) + "0.25x (very gentle)",
-			Clicked: func() {
-				store.SetInertiaAccelRate(0.25)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(0.5) + "0.5x (gentle)",
-			Clicked: func() {
-				store.SetInertiaAccelRate(0.5)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(1.0) + "1.0x (default)",
-			Clicked: func() {
-				store.SetInertiaAccelRate(1.0)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(1.5) + "1.5x (faster)",
-			Clicked: func() {
-				store.SetInertiaAccelRate(1.5)
-				updateInertiaConfig()
-			},
-		},
-		{
-			Text: checkmark(2.0) + "2.0x (aggressive)",
-			Clicked: func() {
-				store.SetInertiaAccelRate(2.0)
-				updateInertiaConfig()
-			},
-		},
-	}
+// Open file using native macOS API
+func openFileNative(path string) {
+	cPath := C.CString(path)
+	defer C.free(unsafe.Pointer(cPath))
+	C.openFile(cPath)
 }
 
-// updateInertiaConfig updates the running inertia system with new settings
-func updateInertiaConfig() {
-	s := store.GetInertiaSettings()
-	if s.Enabled {
-		cfg := inertia.Config{
-			Enabled:   true,
-			MaxSpeed:  s.MaxSpeed,
-			Threshold: s.Threshold,
-			AccelRate: s.AccelRate,
-		}
-		inertia.UpdateConfig(cfg)
+func getLogDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
+	logDir := filepath.Join(home, ".local", "share", "typtel", "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return "", err
+	}
+	return logDir, nil
 }
 
-// distanceUnitMenuItems returns the distance unit selection submenu
-func distanceUnitMenuItems() []menuet.MenuItem {
-	currentUnit := store.GetDistanceUnit()
+func formatAbsolute(n int64) string {
+	s := fmt.Sprintf("%d", n)
+	if n < 0 {
+		return s
+	}
 
-	checkmark := func(unit string) string {
-		if currentUnit == unit {
-			return "✓ "
+	result := ""
+	for i, c := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result += ","
 		}
-		return "   "
+		result += string(c)
 	}
-
-	return []menuet.MenuItem{
-		{
-			Text: checkmark(storage.DistanceUnitFeet) + "Feet / Miles",
-			Clicked: func() {
-				store.SetDistanceUnit(storage.DistanceUnitFeet)
-				updateMenuBarTitle()
-			},
-		},
-		{
-			Text: checkmark(storage.DistanceUnitCars) + "Cars (15ft each)",
-			Clicked: func() {
-				store.SetDistanceUnit(storage.DistanceUnitCars)
-				updateMenuBarTitle()
-			},
-		},
-		{
-			Text: checkmark(storage.DistanceUnitFrisbee) + "Frisbee Fields (330ft)",
-			Clicked: func() {
-				store.SetDistanceUnit(storage.DistanceUnitFrisbee)
-				updateMenuBarTitle()
-			},
-		},
-	}
+	return result
 }
 
-// leaderboardMenuItems returns the stillness leaderboard submenu
-func leaderboardMenuItems() []menuet.MenuItem {
-	entries, err := store.GetMouseLeaderboard(10)
-	if err != nil || len(entries) == 0 {
-		return []menuet.MenuItem{
-			{Text: "No data yet - keep tracking!"},
+func formatDistance(pixels float64) string {
+	feet := mousetracker.PixelsToFeet(pixels)
+
+	unit := store.GetDistanceUnit()
+	switch unit {
+	case storage.DistanceUnitCars:
+		cars := feet / 15.0
+		if cars >= 1000 {
+			return fmt.Sprintf("%.1fk cars", cars/1000)
+		} else if cars >= 1 {
+			return fmt.Sprintf("%.0f cars", cars)
 		}
-	}
+		return fmt.Sprintf("%.1f cars", cars)
 
-	items := make([]menuet.MenuItem, 0, len(entries)+1)
-	items = append(items, menuet.MenuItem{
-		Text: "🧘 Days You Didn't Move The Mouse",
-	})
-
-	for _, entry := range entries {
-		t, _ := time.Parse("2006-01-02", entry.Date)
-		medal := ""
-		switch entry.Rank {
-		case 1:
-			medal = "🥇 "
-		case 2:
-			medal = "🥈 "
-		case 3:
-			medal = "🥉 "
+	case storage.DistanceUnitFrisbee:
+		fields := feet / 330.0
+		if fields >= 100 {
+			return fmt.Sprintf("%.0f fields", fields)
+		} else if fields >= 1 {
+			return fmt.Sprintf("%.1f fields", fields)
 		}
-		items = append(items, menuet.MenuItem{
-			Text: fmt.Sprintf("%s#%d: %s - %s", medal, entry.Rank, t.Format("Jan 2, 2006"), formatDistance(entry.TotalDistance)),
-		})
-	}
+		return fmt.Sprintf("%.2f fields", fields)
 
-	return items
+	default:
+		if feet >= 5280 {
+			return fmt.Sprintf("%.1fmi", feet/5280)
+		} else if feet >= 1 {
+			return fmt.Sprintf("%.0fft", feet)
+		}
+		inches := feet * 12
+		return fmt.Sprintf("%.0fin", inches)
+	}
 }
 
 func showLeaderboard() {
-	// Open the leaderboard view in charts
 	go func() {
 		htmlPath, err := generateLeaderboardHTML()
 		if err != nil {
 			log.Printf("Failed to generate leaderboard: %v", err)
 			return
 		}
-		cmd := exec.Command("open", htmlPath)
-		if err := cmd.Run(); err != nil {
-			log.Printf("Failed to open leaderboard: %v", err)
-		}
+		openFileNative(htmlPath)
 	}()
 }
 
@@ -1052,7 +1099,6 @@ func generateLeaderboardHTML() (string, error) {
 </body>
 </html>`, rows.String())
 
-	// Write to temp file
 	dataDir, err := getLogDir()
 	if err != nil {
 		return "", err
@@ -1072,16 +1118,11 @@ func openCharts() {
 			log.Printf("Failed to generate charts: %v", err)
 			return
 		}
-
-		cmd := exec.Command("open", htmlPath)
-		if err := cmd.Run(); err != nil {
-			log.Printf("Failed to open charts: %v", err)
-		}
+		openFileNative(htmlPath)
 	}()
 }
 
 func generateChartsHTML() (string, error) {
-	// Helper to prepare chart data for a given number of days
 	prepareChartData := func(days int) (labels, keystrokeData, wordData []string, mouseDataFeet []float64, totalKeystrokes, totalWords int64, totalMouseDistance float64, heatmapHTML string, err error) {
 		histStats, err := store.GetHistoricalStats(days)
 		if err != nil {
@@ -1119,7 +1160,6 @@ func generateChartsHTML() (string, error) {
 		return
 	}
 
-	// Get data for both weekly and monthly views
 	weeklyLabels, weeklyKeystrokes, weeklyWords, weeklyMouseFeet, weeklyTotalKeys, weeklyTotalWords, weeklyTotalMouse, weeklyHeatmap, err := prepareChartData(7)
 	if err != nil {
 		return "", err
@@ -1130,7 +1170,6 @@ func generateChartsHTML() (string, error) {
 		return "", err
 	}
 
-	// Convert mouse feet to JSON arrays for each unit
 	formatMouseData := func(feetData []float64, divisor float64) string {
 		var result []string
 		for _, f := range feetData {
@@ -1383,7 +1422,6 @@ func generateChartsHTML() (string, error) {
     </div>
 
     <script>
-        // Data for both periods
         const data = {
             weekly: {
                 labels: [%s],
@@ -1438,21 +1476,17 @@ func generateChartsHTML() (string, error) {
             const unit = document.getElementById('unitSelect').value;
             const d = data[period];
 
-            // Update stats
             document.getElementById('totalKeystrokes').textContent = formatNumber(d.totalKeystrokes);
             document.getElementById('totalWords').textContent = formatNumber(d.totalWords);
             document.getElementById('avgKeystrokes').textContent = formatNumber(Math.round(d.totalKeystrokes / d.days));
             document.getElementById('totalMouse').textContent = formatDistance(d.totalMouseFeet);
 
-            // Update mouse chart title
             document.getElementById('mouseChartTitle').textContent = 'Mouse Distance per Day (' + unitLabels[unit] + ')';
 
-            // Destroy existing charts
             if (keystrokesChart) keystrokesChart.destroy();
             if (wordsChart) wordsChart.destroy();
             if (mouseChart) mouseChart.destroy();
 
-            // Create new charts
             keystrokesChart = new Chart(document.getElementById('keystrokesChart'), {
                 type: 'bar',
                 data: {
@@ -1480,17 +1514,14 @@ func generateChartsHTML() (string, error) {
                 options: chartConfig
             });
 
-            // Update heatmap
             document.getElementById('heatmapContainer').innerHTML = d.heatmap;
         }
 
-        // Initialize
         updateCharts();
     </script>
 </body>
 </html>`,
 		generateHourLabels(),
-		// Weekly data
 		strings.Join(weeklyLabels, ","),
 		strings.Join(weeklyKeystrokes, ","),
 		strings.Join(weeklyWords, ","),
@@ -1501,7 +1532,6 @@ func generateChartsHTML() (string, error) {
 		weeklyTotalWords,
 		mousetracker.PixelsToFeet(float64(weeklyTotalMouse)),
 		weeklyHeatmap,
-		// Monthly data
 		strings.Join(monthlyLabels, ","),
 		strings.Join(monthlyKeystrokes, ","),
 		strings.Join(monthlyWords, ","),
@@ -1514,7 +1544,6 @@ func generateChartsHTML() (string, error) {
 		monthlyHeatmap,
 	)
 
-	// Write to temp file
 	dataDir, err := getLogDir()
 	if err != nil {
 		return "", err
@@ -1540,7 +1569,6 @@ func generateHourLabels() string {
 }
 
 func generateHeatmapHTML(hourlyData map[string][]HourlyStats, days int) string {
-	// Find max value for color scaling
 	var maxVal int64 = 1
 	for _, hours := range hourlyData {
 		for _, h := range hours {
@@ -1550,7 +1578,6 @@ func generateHeatmapHTML(hourlyData map[string][]HourlyStats, days int) string {
 		}
 	}
 
-	// Sort dates
 	dates := make([]string, 0, len(hourlyData))
 	for date := range hourlyData {
 		dates = append(dates, date)
@@ -1600,8 +1627,6 @@ func getHeatmapColor(value, max int64) string {
 
 type HourlyStats = storage.HourlyStats
 
-// isWordBoundary checks if the keycode represents a word boundary (end of word)
-// macOS keycodes: space=49, return=36, tab=48
 func isWordBoundary(keycode int) bool {
 	switch keycode {
 	case 49: // Space
