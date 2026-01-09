@@ -601,3 +601,282 @@ func TestHelperFunctions(t *testing.T) {
 		t.Errorf("floatToString(3.14159) = %q, want '3.14'", floatToString(3.14159))
 	}
 }
+
+func TestParseIntEdgeCases(t *testing.T) {
+	// Test invalid input
+	_, err := parseInt("not_a_number")
+	if err == nil {
+		t.Error("parseInt('not_a_number') should return an error")
+	}
+
+	// Test empty string
+	_, err = parseInt("")
+	if err == nil {
+		t.Error("parseInt('') should return an error")
+	}
+
+	// Test negative number
+	v, err := parseInt("-42")
+	if err != nil || v != -42 {
+		t.Errorf("parseInt('-42') = %d, %v; want -42, nil", v, err)
+	}
+
+	// Test zero
+	v, err = parseInt("0")
+	if err != nil || v != 0 {
+		t.Errorf("parseInt('0') = %d, %v; want 0, nil", v, err)
+	}
+}
+
+func TestParseFloatEdgeCases(t *testing.T) {
+	// Test invalid input
+	_, err := parseFloat("not_a_number")
+	if err == nil {
+		t.Error("parseFloat('not_a_number') should return an error")
+	}
+
+	// Test empty string
+	_, err = parseFloat("")
+	if err == nil {
+		t.Error("parseFloat('') should return an error")
+	}
+
+	// Test negative number
+	f, err := parseFloat("-3.14")
+	if err != nil || f != -3.14 {
+		t.Errorf("parseFloat('-3.14') = %f, %v; want -3.14, nil", f, err)
+	}
+
+	// Test zero
+	f, err = parseFloat("0.0")
+	if err != nil || f != 0.0 {
+		t.Errorf("parseFloat('0.0') = %f, %v; want 0.0, nil", f, err)
+	}
+
+	// Test integer string
+	f, err = parseFloat("42")
+	if err != nil || f != 42.0 {
+		t.Errorf("parseFloat('42') = %f, %v; want 42.0, nil", f, err)
+	}
+}
+
+func TestGetHistoricalStats(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Get stats with no data
+	stats, err := store.GetHistoricalStats(7)
+	if err != nil {
+		t.Fatalf("GetHistoricalStats failed: %v", err)
+	}
+
+	if len(stats) != 7 {
+		t.Errorf("Expected 7 days of stats, got %d", len(stats))
+	}
+
+	// All should have 0 keystrokes initially
+	for _, s := range stats {
+		if s.Keystrokes != 0 {
+			t.Errorf("Expected 0 keystrokes for %s, got %d", s.Date, s.Keystrokes)
+		}
+	}
+}
+
+func TestGetAllHourlyStatsForDays(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Record some keystrokes
+	for i := 0; i < 10; i++ {
+		if err := store.RecordKeystroke(42); err != nil {
+			t.Fatalf("RecordKeystroke failed: %v", err)
+		}
+	}
+
+	// Get hourly stats
+	stats, err := store.GetAllHourlyStatsForDays(1)
+	if err != nil {
+		t.Fatalf("GetAllHourlyStatsForDays failed: %v", err)
+	}
+
+	// Should have today's stats
+	today := time.Now().Format("2006-01-02")
+	if hourlyStats, ok := stats[today]; ok {
+		// Find current hour
+		currentHour := time.Now().Hour()
+		found := false
+		for _, hs := range hourlyStats {
+			if hs.Hour == currentHour && hs.Keystrokes == 10 {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Error("Expected to find 10 keystrokes in current hour")
+		}
+	}
+}
+
+func TestGetMouseHistoricalStats(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Get historical stats with no data
+	stats, err := store.GetMouseHistoricalStats(7)
+	if err != nil {
+		t.Fatalf("GetMouseHistoricalStats failed: %v", err)
+	}
+
+	if len(stats) != 7 {
+		t.Errorf("Expected 7 days of stats, got %d", len(stats))
+	}
+
+	// All should have 0 distance initially
+	for _, s := range stats {
+		if s.TotalDistance != 0 {
+			t.Errorf("Expected 0 distance for %s, got %f", s.Date, s.TotalDistance)
+		}
+	}
+}
+
+func TestGetWeekMouseStats(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Get week stats with no data
+	stats, err := store.GetWeekMouseStats()
+	if err != nil {
+		t.Fatalf("GetWeekMouseStats failed: %v", err)
+	}
+
+	if len(stats) != 7 {
+		t.Errorf("Expected 7 days of stats, got %d", len(stats))
+	}
+}
+
+func TestSettingsEdgeCases(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Test empty key
+	err := store.SetSetting("", "value")
+	if err != nil {
+		t.Logf("SetSetting with empty key: %v", err)
+	}
+
+	// Test empty value
+	err = store.SetSetting("test_key", "")
+	if err != nil {
+		t.Fatalf("SetSetting with empty value failed: %v", err)
+	}
+	val, _ := store.GetSetting("test_key")
+	if val != "" {
+		t.Errorf("Expected empty value, got %q", val)
+	}
+
+	// Test overwriting
+	store.SetSetting("test_key", "first")
+	store.SetSetting("test_key", "second")
+	val, _ = store.GetSetting("test_key")
+	if val != "second" {
+		t.Errorf("Expected 'second', got %q", val)
+	}
+}
+
+func TestMouseLeaderboardEmpty(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Get leaderboard with no data
+	leaderboard, err := store.GetMouseLeaderboard(10)
+	if err != nil {
+		t.Fatalf("GetMouseLeaderboard failed: %v", err)
+	}
+
+	// Should be empty
+	if len(leaderboard) != 0 {
+		t.Errorf("Expected empty leaderboard, got %d entries", len(leaderboard))
+	}
+}
+
+func TestRecordMouseClickMultiple(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Record multiple clicks
+	for i := 0; i < 5; i++ {
+		if err := store.RecordMouseClick(); err != nil {
+			t.Fatalf("RecordMouseClick failed: %v", err)
+		}
+	}
+
+	// Check stats
+	stats, err := store.GetTodayMouseStats()
+	if err != nil {
+		t.Fatalf("GetTodayMouseStats failed: %v", err)
+	}
+
+	if stats.ClickCount != 5 {
+		t.Errorf("Expected 5 clicks, got %d", stats.ClickCount)
+	}
+}
+
+func TestAbsEdgeCases(t *testing.T) {
+	tests := []struct {
+		input    float64
+		expected float64
+	}{
+		{-0.0, 0.0},
+		{1.5, 1.5},
+		{-1.5, 1.5},
+		{-1000000.5, 1000000.5},
+		{0.00001, 0.00001},
+		{-0.00001, 0.00001},
+	}
+
+	for _, tt := range tests {
+		result := abs(tt.input)
+		if result != tt.expected {
+			t.Errorf("abs(%f) = %f, want %f", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestIntToStringEdgeCases(t *testing.T) {
+	tests := []struct {
+		input    int
+		expected string
+	}{
+		{0, "0"},
+		{-1, "-1"},
+		{-1000000, "-1000000"},
+		{2147483647, "2147483647"},
+	}
+
+	for _, tt := range tests {
+		result := intToString(tt.input)
+		if result != tt.expected {
+			t.Errorf("intToString(%d) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}
+
+func TestFloatToStringEdgeCases(t *testing.T) {
+	tests := []struct {
+		input    float64
+		expected string
+	}{
+		{0.0, "0.00"},
+		{-1.0, "-1.00"},
+		{1.999, "2.00"},
+		{1.001, "1.00"},
+		{100.456, "100.46"},
+	}
+
+	for _, tt := range tests {
+		result := floatToString(tt.input)
+		if result != tt.expected {
+			t.Errorf("floatToString(%f) = %q, want %q", tt.input, result, tt.expected)
+		}
+	}
+}

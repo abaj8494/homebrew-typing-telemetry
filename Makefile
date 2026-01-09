@@ -72,6 +72,7 @@ test-coverage:
 	go test -v -race -coverprofile=coverage.out ./...
 	go tool cover -html=coverage.out -o coverage.html
 	@echo "Coverage report generated: coverage.html"
+	@open coverage.html
 
 # Update word lists from external sources
 update-wordlists:
