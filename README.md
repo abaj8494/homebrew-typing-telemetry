@@ -59,6 +59,9 @@ Click the menu bar icon to view:
 
 View detailed statistics and activity heatmaps via **View Charts** in the menu bar.
 
+- Change the **Distance Unit** dropdown to update all mouse distance displays (feet, car lengths, or frisbee fields)
+- Enable **Key Types** in Settings to see a breakdown of letters (A-Z), modifier keys, and special characters
+
 ![Statistics](img/charts-html.png)
 
 ![Activity Heatmap](img/hourly-week.png)
