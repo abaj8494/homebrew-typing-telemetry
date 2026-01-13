@@ -1014,23 +1014,14 @@ func (m TypingTestModel) View() string {
 		testContent.WriteString(m.renderResults())
 	}
 
-	// Create the typing test box with height constraint to prevent bottom breaking
-	// Calculate available height: terminal height minus menu bar, help text, and margins
-	reservedLines := 8 // menu bar (2) + help text (2) + margins (4)
-	if m.state == StateRunning {
-		reservedLines = 4 // No menu bar or help text during running
-	}
-	availableHeight := m.height - reservedLines
-	if availableHeight < 10 {
-		availableHeight = 10 // Minimum height
-	}
-
+	// Create the typing test box
+	// Don't use MaxHeight as it can clip the bottom border when content overflows
+	// Instead, let lipgloss render the full box and rely on terminal scrolling if needed
 	typingBoxStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color(CurrentTheme.Border)).
 		Padding(1, 2).
-		Width(boxWidth).
-		MaxHeight(availableHeight)
+		Width(boxWidth)
 
 	b.WriteString(typingBoxStyle.Render(testContent.String()))
 
