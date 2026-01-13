@@ -28,6 +28,7 @@ type Model struct {
 	height             int
 	err                error
 	SwitchToTypingTest bool // Flag to indicate user wants to switch to typing test
+	SwitchToCharts     bool // Flag to indicate user wants to view charts
 }
 
 type statsMsg struct {
@@ -74,6 +75,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.fetchStats
 		case "t":
 			m.SwitchToTypingTest = true
+			return m, tea.Quit
+		case "v":
+			m.SwitchToCharts = true
 			return m, tea.Quit
 		}
 
@@ -148,7 +152,7 @@ func (m Model) View() string {
 	b.WriteString("\n")
 
 	// Help
-	b.WriteString(helpStyle.Render("t: typing test • r: refresh • q: quit"))
+	b.WriteString(helpStyle.Render("t: typing test • v: view charts • r: refresh • q: quit"))
 
 	return b.String()
 }

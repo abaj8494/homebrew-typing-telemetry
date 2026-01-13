@@ -3,7 +3,7 @@
 BINARY_NAME=typtel
 MENUBAR_NAME=typtel-menubar
 APP_NAME=Typtel.app
-VERSION?=1.2.0
+VERSION?=1.2.1
 BUILD_DIR=build
 PREFIX?=/usr/local
 
@@ -91,11 +91,12 @@ run-menubar: build-menubar
 	./$(BUILD_DIR)/$(MENUBAR_NAME)
 
 # Build macOS .app bundle (openable from Finder/Spotlight)
-app: build-menubar
+app: build-cli build-menubar
 	@echo "Building $(APP_NAME)..."
 	@mkdir -p $(BUILD_DIR)/$(APP_NAME)/Contents/MacOS
 	@mkdir -p $(BUILD_DIR)/$(APP_NAME)/Contents/Resources
 	@cp $(BUILD_DIR)/$(MENUBAR_NAME) $(BUILD_DIR)/$(APP_NAME)/Contents/MacOS/
+	@cp $(BUILD_DIR)/$(BINARY_NAME) $(BUILD_DIR)/$(APP_NAME)/Contents/MacOS/
 	@cp assets/AppIcon.icns $(BUILD_DIR)/$(APP_NAME)/Contents/Resources/AppIcon.icns
 	@sed 's/__VERSION__/$(VERSION)/g' scripts/Info.plist > $(BUILD_DIR)/$(APP_NAME)/Contents/Info.plist
 	@echo "Built $(BUILD_DIR)/$(APP_NAME)"

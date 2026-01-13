@@ -15,6 +15,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// Version is set at build time via ldflags: -X main.Version=$(VERSION)
+var Version = "dev"
+
 var (
 	// Flags for test command
 	testFile      string
@@ -70,6 +73,19 @@ var viewCmd = &cobra.Command{
 	},
 }
 
+var versionCmd = &cobra.Command{
+	Use:     "version",
+	Aliases: []string{"info"},
+	Short:   "Show version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("Typtel v%s\n", Version)
+		fmt.Println("Keystroke and mouse distance metrics for developers")
+		fmt.Println()
+		fmt.Println("Homepage: https://github.com/abaj8494/typing-telemetry")
+		fmt.Println("License:  MIT")
+	},
+}
+
 func init() {
 	testCmd.Flags().StringVarP(&testFile, "file", "f", "", "Path to text file with words/passages")
 	testCmd.Flags().IntVarP(&testWordCount, "words", "w", 25, "Number of words in the test")
@@ -78,6 +94,7 @@ func init() {
 	rootCmd.AddCommand(todayCmd)
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(viewCmd)
+	rootCmd.AddCommand(versionCmd)
 }
 
 func main() {
@@ -100,9 +117,14 @@ func runTUI() error {
 		return err
 	}
 
-	// Check if user wants to switch to typing test
-	if m, ok := model.(tui.Model); ok && m.SwitchToTypingTest {
-		return runTypingTest()
+	// Check if user wants to switch to typing test or charts
+	if m, ok := model.(tui.Model); ok {
+		if m.SwitchToTypingTest {
+			return runTypingTest()
+		}
+		if m.SwitchToCharts {
+			return viewCharts()
+		}
 	}
 
 	return nil
