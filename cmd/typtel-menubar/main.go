@@ -136,6 +136,7 @@ var (
 	mShowWords          *systray.MenuItem
 	mShowClicks         *systray.MenuItem
 	mShowDistance       *systray.MenuItem
+	mShowKeyTypes       *systray.MenuItem
 	mDistanceFeet       *systray.MenuItem
 	mDistanceCars       *systray.MenuItem
 	mDistanceFields     *systray.MenuItem
@@ -404,6 +405,15 @@ func buildMenu() {
 
 	mSettings.AddSubMenuItem("", "").Disable() // Separator
 
+	// Charts section
+	mChartsLabel := mSettings.AddSubMenuItem("📊 Charts:", "")
+	mChartsLabel.Disable()
+
+	showKeyTypes := store.IsShowKeyTypesEnabled()
+	mShowKeyTypes = mSettings.AddSubMenuItemCheckbox("Show Key Types (Letters/Modifiers/Special)", "", showKeyTypes)
+
+	mSettings.AddSubMenuItem("", "").Disable() // Separator
+
 	// Inertia section
 	mInertiaLabel := mSettings.AddSubMenuItem("⚡ Inertia (Key Acceleration):", "")
 	mInertiaLabel.Disable()
@@ -546,6 +556,15 @@ func handleSettingsClicks() {
 			showAlertDialog("Mouse Distance "+map[bool]string{true: "Disabled", false: "Enabled"}[enabled],
 				"Restart the app for changes to take effect.",
 				[]string{"OK"})
+
+		case <-mShowKeyTypes.ClickedCh:
+			enabled := store.IsShowKeyTypesEnabled()
+			store.SetShowKeyTypesEnabled(!enabled)
+			if !enabled {
+				mShowKeyTypes.Check()
+			} else {
+				mShowKeyTypes.Uncheck()
+			}
 
 		case <-mInertiaEnabled.ClickedCh:
 			s := store.GetInertiaSettings()
@@ -1180,49 +1199,77 @@ func openCharts() {
 }
 
 func generateChartsHTML() (string, error) {
-	prepareChartData := func(days int) (labels, keystrokeData, wordData []string, mouseDataFeet []float64, totalKeystrokes, totalWords int64, totalMouseDistance float64, heatmapHTML string, err error) {
+	// Check if key types should be shown
+	showKeyTypes := store.IsShowKeyTypesEnabled()
+
+	type chartData struct {
+		labels            []string
+		keystrokeData     []string
+		wordData          []string
+		mouseDataFeet     []float64
+		letterData        []string
+		modifierData      []string
+		specialData       []string
+		totalKeystrokes   int64
+		totalWords        int64
+		totalMouseDist    float64
+		totalLetters      int64
+		totalModifiers    int64
+		totalSpecial      int64
+		heatmapHTML       string
+	}
+
+	prepareChartData := func(days int) (*chartData, error) {
+		data := &chartData{}
+
 		histStats, err := store.GetHistoricalStats(days)
 		if err != nil {
-			return nil, nil, nil, nil, 0, 0, 0, "", err
+			return nil, err
 		}
 
 		mouseStats, err := store.GetMouseHistoricalStats(days)
 		if err != nil {
-			return nil, nil, nil, nil, 0, 0, 0, "", err
+			return nil, err
 		}
 
 		hourlyData, err := store.GetAllHourlyStatsForDays(days)
 		if err != nil {
-			return nil, nil, nil, nil, 0, 0, 0, "", err
+			return nil, err
 		}
 
 		for i, stat := range histStats {
 			t, _ := time.Parse("2006-01-02", stat.Date)
-			labels = append(labels, fmt.Sprintf("'%s'", t.Format("Jan 2")))
-			keystrokeData = append(keystrokeData, fmt.Sprintf("%d", stat.Keystrokes))
-			wordData = append(wordData, fmt.Sprintf("%d", stat.Words))
-			totalKeystrokes += stat.Keystrokes
-			totalWords += stat.Words
+			data.labels = append(data.labels, fmt.Sprintf("'%s'", t.Format("Jan 2")))
+			data.keystrokeData = append(data.keystrokeData, fmt.Sprintf("%d", stat.Keystrokes))
+			data.wordData = append(data.wordData, fmt.Sprintf("%d", stat.Words))
+			data.letterData = append(data.letterData, fmt.Sprintf("%d", stat.Letters))
+			data.modifierData = append(data.modifierData, fmt.Sprintf("%d", stat.Modifiers))
+			data.specialData = append(data.specialData, fmt.Sprintf("%d", stat.Special))
+			data.totalKeystrokes += stat.Keystrokes
+			data.totalWords += stat.Words
+			data.totalLetters += stat.Letters
+			data.totalModifiers += stat.Modifiers
+			data.totalSpecial += stat.Special
 
 			if i < len(mouseStats) {
 				feet := mousetracker.PixelsToFeet(mouseStats[i].TotalDistance)
-				mouseDataFeet = append(mouseDataFeet, feet)
-				totalMouseDistance += mouseStats[i].TotalDistance
+				data.mouseDataFeet = append(data.mouseDataFeet, feet)
+				data.totalMouseDist += mouseStats[i].TotalDistance
 			} else {
-				mouseDataFeet = append(mouseDataFeet, 0)
+				data.mouseDataFeet = append(data.mouseDataFeet, 0)
 			}
 		}
 
-		heatmapHTML = generateHeatmapHTML(hourlyData, days)
-		return
+		data.heatmapHTML = generateHeatmapHTML(hourlyData, days)
+		return data, nil
 	}
 
-	weeklyLabels, weeklyKeystrokes, weeklyWords, weeklyMouseFeet, weeklyTotalKeys, weeklyTotalWords, weeklyTotalMouse, weeklyHeatmap, err := prepareChartData(7)
+	weeklyData, err := prepareChartData(7)
 	if err != nil {
 		return "", err
 	}
 
-	monthlyLabels, monthlyKeystrokes, monthlyWords, monthlyMouseFeet, monthlyTotalKeys, monthlyTotalWords, monthlyTotalMouse, monthlyHeatmap, err := prepareChartData(30)
+	monthlyData, err := prepareChartData(30)
 	if err != nil {
 		return "", err
 	}
@@ -1235,12 +1282,18 @@ func generateChartsHTML() (string, error) {
 		return strings.Join(result, ",")
 	}
 
-	weeklyMouseFeetStr := formatMouseData(weeklyMouseFeet, 1.0)
-	weeklyMouseCarsStr := formatMouseData(weeklyMouseFeet, 15.0)
-	weeklyMouseFieldsStr := formatMouseData(weeklyMouseFeet, 330.0)
-	monthlyMouseFeetStr := formatMouseData(monthlyMouseFeet, 1.0)
-	monthlyMouseCarsStr := formatMouseData(monthlyMouseFeet, 15.0)
-	monthlyMouseFieldsStr := formatMouseData(monthlyMouseFeet, 330.0)
+	weeklyMouseFeetStr := formatMouseData(weeklyData.mouseDataFeet, 1.0)
+	weeklyMouseCarsStr := formatMouseData(weeklyData.mouseDataFeet, 15.0)
+	weeklyMouseFieldsStr := formatMouseData(weeklyData.mouseDataFeet, 330.0)
+	monthlyMouseFeetStr := formatMouseData(monthlyData.mouseDataFeet, 1.0)
+	monthlyMouseCarsStr := formatMouseData(monthlyData.mouseDataFeet, 15.0)
+	monthlyMouseFieldsStr := formatMouseData(monthlyData.mouseDataFeet, 330.0)
+
+	// Determine if key types section should be visible
+	keyTypesDisplay := "none"
+	if showKeyTypes {
+		keyTypesDisplay = "flex"
+	}
 
 	html := fmt.Sprintf(`<!DOCTYPE html>
 <html>
@@ -1440,6 +1493,21 @@ func generateChartsHTML() (string, error) {
         </div>
     </div>
 
+    <div class="stats-summary" id="keyTypesStats" style="display: %s;">
+        <div class="stat-item">
+            <div class="stat-value" id="totalLetters" style="background: linear-gradient(90deg, #7bc96f, #4caf50); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">-</div>
+            <div class="stat-label">Letters (A-Z)</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="totalModifiers" style="background: linear-gradient(90deg, #ff9800, #f57c00); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">-</div>
+            <div class="stat-label">Modifiers</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="totalSpecial" style="background: linear-gradient(90deg, #e91e63, #c2185b); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">-</div>
+            <div class="stat-label">Special Keys</div>
+        </div>
+    </div>
+
     <div class="charts-container">
         <div class="chart-box">
             <h2>Keystrokes per Day</h2>
@@ -1448,6 +1516,13 @@ func generateChartsHTML() (string, error) {
         <div class="chart-box">
             <h2>Words per Day</h2>
             <canvas id="wordsChart"></canvas>
+        </div>
+    </div>
+
+    <div class="charts-container" id="keyTypesCharts" style="display: %s;">
+        <div class="chart-box" style="grid-column: span 2;">
+            <h2>Key Type Breakdown per Day</h2>
+            <canvas id="keyTypesChart"></canvas>
         </div>
     </div>
 
@@ -1485,9 +1560,15 @@ func generateChartsHTML() (string, error) {
                 keystrokes: [%s],
                 words: [%s],
                 mouse: { feet: [%s], cars: [%s], fields: [%s] },
+                letters: [%s],
+                modifiers: [%s],
+                special: [%s],
                 totalKeystrokes: %d,
                 totalWords: %d,
                 totalMouseFeet: %.2f,
+                totalLetters: %d,
+                totalModifiers: %d,
+                totalSpecial: %d,
                 days: 7,
                 heatmap: `+"`%s`"+`
             },
@@ -1496,9 +1577,15 @@ func generateChartsHTML() (string, error) {
                 keystrokes: [%s],
                 words: [%s],
                 mouse: { feet: [%s], cars: [%s], fields: [%s] },
+                letters: [%s],
+                modifiers: [%s],
+                special: [%s],
                 totalKeystrokes: %d,
                 totalWords: %d,
                 totalMouseFeet: %.2f,
+                totalLetters: %d,
+                totalModifiers: %d,
+                totalSpecial: %d,
                 days: 30,
                 heatmap: `+"`%s`"+`
             }
@@ -1506,7 +1593,7 @@ func generateChartsHTML() (string, error) {
 
         const unitLabels = { feet: 'feet', cars: 'car lengths', fields: 'frisbee fields' };
 
-        let keystrokesChart, wordsChart, mouseChart;
+        let keystrokesChart, wordsChart, mouseChart, keyTypesChart;
 
         const chartConfig = {
             responsive: true,
@@ -1517,15 +1604,39 @@ func generateChartsHTML() (string, error) {
             }
         };
 
+        const stackedChartConfig = {
+            responsive: true,
+            plugins: { legend: { display: true, labels: { color: '#888' } } },
+            scales: {
+                y: { beginAtZero: true, stacked: true, grid: { color: 'rgba(255,255,255,0.1)' }, ticks: { color: '#888' } },
+                x: { stacked: true, grid: { display: false }, ticks: { color: '#888' } }
+            }
+        };
+
         function formatNumber(n) {
             if (n >= 1000000) return (n/1000000).toFixed(1) + 'M';
             if (n >= 1000) return (n/1000).toFixed(1) + 'K';
             return n.toString();
         }
 
-        function formatDistance(feet) {
-            if (feet >= 5280) return (feet/5280).toFixed(2) + ' mi';
-            return feet.toFixed(0) + ' ft';
+        function formatDistance(feet, unit) {
+            unit = unit || 'feet';
+            switch(unit) {
+                case 'cars':
+                    const cars = feet / 15.0;
+                    if (cars >= 1000) return (cars/1000).toFixed(1) + 'k cars';
+                    if (cars >= 1) return cars.toFixed(0) + ' cars';
+                    return cars.toFixed(1) + ' cars';
+                case 'fields':
+                    const fields = feet / 330.0;
+                    if (fields >= 100) return fields.toFixed(0) + ' fields';
+                    if (fields >= 1) return fields.toFixed(1) + ' fields';
+                    return fields.toFixed(2) + ' fields';
+                default:
+                    if (feet >= 5280) return (feet/5280).toFixed(2) + ' mi';
+                    if (feet >= 1) return feet.toFixed(0) + ' ft';
+                    return (feet * 12).toFixed(0) + ' in';
+            }
         }
 
         function updateCharts() {
@@ -1536,13 +1647,22 @@ func generateChartsHTML() (string, error) {
             document.getElementById('totalKeystrokes').textContent = formatNumber(d.totalKeystrokes);
             document.getElementById('totalWords').textContent = formatNumber(d.totalWords);
             document.getElementById('avgKeystrokes').textContent = formatNumber(Math.round(d.totalKeystrokes / d.days));
-            document.getElementById('totalMouse').textContent = formatDistance(d.totalMouseFeet);
+            document.getElementById('totalMouse').textContent = formatDistance(d.totalMouseFeet, unit);
+
+            // Update key types stats if visible
+            const keyTypesStats = document.getElementById('keyTypesStats');
+            if (keyTypesStats && keyTypesStats.style.display !== 'none') {
+                document.getElementById('totalLetters').textContent = formatNumber(d.totalLetters);
+                document.getElementById('totalModifiers').textContent = formatNumber(d.totalModifiers);
+                document.getElementById('totalSpecial').textContent = formatNumber(d.totalSpecial);
+            }
 
             document.getElementById('mouseChartTitle').textContent = 'Mouse Distance per Day (' + unitLabels[unit] + ')';
 
             if (keystrokesChart) keystrokesChart.destroy();
             if (wordsChart) wordsChart.destroy();
             if (mouseChart) mouseChart.destroy();
+            if (keyTypesChart) keyTypesChart.destroy();
 
             keystrokesChart = new Chart(document.getElementById('keystrokesChart'), {
                 type: 'bar',
@@ -1562,6 +1682,23 @@ func generateChartsHTML() (string, error) {
                 options: chartConfig
             });
 
+            // Key types chart (stacked bar) - only create if element exists
+            const keyTypesCanvas = document.getElementById('keyTypesChart');
+            if (keyTypesCanvas) {
+                keyTypesChart = new Chart(keyTypesCanvas, {
+                    type: 'bar',
+                    data: {
+                        labels: d.labels,
+                        datasets: [
+                            { label: 'Letters', data: d.letters, backgroundColor: 'rgba(122, 201, 111, 0.7)', borderColor: 'rgba(122, 201, 111, 1)', borderWidth: 1 },
+                            { label: 'Modifiers', data: d.modifiers, backgroundColor: 'rgba(255, 152, 0, 0.7)', borderColor: 'rgba(255, 152, 0, 1)', borderWidth: 1 },
+                            { label: 'Special', data: d.special, backgroundColor: 'rgba(233, 30, 99, 0.7)', borderColor: 'rgba(233, 30, 99, 1)', borderWidth: 1 }
+                        ]
+                    },
+                    options: stackedChartConfig
+                });
+            }
+
             mouseChart = new Chart(document.getElementById('mouseChart'), {
                 type: 'bar',
                 data: {
@@ -1579,26 +1716,40 @@ func generateChartsHTML() (string, error) {
 </body>
 </html>`,
 		generateHourLabels(),
-		strings.Join(weeklyLabels, ","),
-		strings.Join(weeklyKeystrokes, ","),
-		strings.Join(weeklyWords, ","),
+		keyTypesDisplay,                                           // key types stats display
+		keyTypesDisplay,                                           // key types charts display
+		strings.Join(weeklyData.labels, ","),
+		strings.Join(weeklyData.keystrokeData, ","),
+		strings.Join(weeklyData.wordData, ","),
 		weeklyMouseFeetStr,
 		weeklyMouseCarsStr,
 		weeklyMouseFieldsStr,
-		weeklyTotalKeys,
-		weeklyTotalWords,
-		mousetracker.PixelsToFeet(float64(weeklyTotalMouse)),
-		weeklyHeatmap,
-		strings.Join(monthlyLabels, ","),
-		strings.Join(monthlyKeystrokes, ","),
-		strings.Join(monthlyWords, ","),
+		strings.Join(weeklyData.letterData, ","),
+		strings.Join(weeklyData.modifierData, ","),
+		strings.Join(weeklyData.specialData, ","),
+		weeklyData.totalKeystrokes,
+		weeklyData.totalWords,
+		mousetracker.PixelsToFeet(weeklyData.totalMouseDist),
+		weeklyData.totalLetters,
+		weeklyData.totalModifiers,
+		weeklyData.totalSpecial,
+		weeklyData.heatmapHTML,
+		strings.Join(monthlyData.labels, ","),
+		strings.Join(monthlyData.keystrokeData, ","),
+		strings.Join(monthlyData.wordData, ","),
 		monthlyMouseFeetStr,
 		monthlyMouseCarsStr,
 		monthlyMouseFieldsStr,
-		monthlyTotalKeys,
-		monthlyTotalWords,
-		mousetracker.PixelsToFeet(float64(monthlyTotalMouse)),
-		monthlyHeatmap,
+		strings.Join(monthlyData.letterData, ","),
+		strings.Join(monthlyData.modifierData, ","),
+		strings.Join(monthlyData.specialData, ","),
+		monthlyData.totalKeystrokes,
+		monthlyData.totalWords,
+		mousetracker.PixelsToFeet(monthlyData.totalMouseDist),
+		monthlyData.totalLetters,
+		monthlyData.totalModifiers,
+		monthlyData.totalSpecial,
+		monthlyData.heatmapHTML,
 	)
 
 	dataDir, err := getLogDir()

@@ -582,9 +582,24 @@ func generateChartsHTML(store *storage.Store) (string, error) {
             return n.toString();
         }
 
-        function formatDistanceJS(feet) {
-            if (feet >= 5280) return (feet/5280).toFixed(2) + ' mi';
-            return feet.toFixed(0) + ' ft';
+        function formatDistanceJS(feet, unit) {
+            unit = unit || 'feet';
+            switch(unit) {
+                case 'cars':
+                    const cars = feet / 15.0;
+                    if (cars >= 1000) return (cars/1000).toFixed(1) + 'k cars';
+                    if (cars >= 1) return cars.toFixed(0) + ' cars';
+                    return cars.toFixed(1) + ' cars';
+                case 'fields':
+                    const fields = feet / 330.0;
+                    if (fields >= 100) return fields.toFixed(0) + ' fields';
+                    if (fields >= 1) return fields.toFixed(1) + ' fields';
+                    return fields.toFixed(2) + ' fields';
+                default:
+                    if (feet >= 5280) return (feet/5280).toFixed(2) + ' mi';
+                    if (feet >= 1) return feet.toFixed(0) + ' ft';
+                    return (feet * 12).toFixed(0) + ' in';
+            }
         }
 
         function updateCharts() {
@@ -595,7 +610,7 @@ func generateChartsHTML(store *storage.Store) (string, error) {
             document.getElementById('totalKeystrokes').textContent = formatNumber(d.totalKeystrokes);
             document.getElementById('totalWords').textContent = formatNumber(d.totalWords);
             document.getElementById('avgKeystrokes').textContent = formatNumber(Math.round(d.totalKeystrokes / d.days));
-            document.getElementById('totalMouse').textContent = formatDistanceJS(d.totalMouseFeet);
+            document.getElementById('totalMouse').textContent = formatDistanceJS(d.totalMouseFeet, unit);
 
             document.getElementById('mouseChartTitle').textContent = 'Mouse Distance per Day (' + unitLabels[unit] + ')';
 
