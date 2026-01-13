@@ -19,6 +19,9 @@ type DailyStats struct {
 	Date       string
 	Keystrokes int64
 	Words      int64
+	Letters    int64 // a-z, A-Z
+	Modifiers  int64 // Shift, Ctrl, Alt/Option, Cmd
+	Special    int64 // Numbers, punctuation, function keys, etc.
 }
 
 type HourlyStats struct {
@@ -130,7 +133,46 @@ func initSchema(db *sql.DB) error {
 	// Add click_count column if it doesn't exist (migration for existing DBs)
 	_, _ = db.Exec("ALTER TABLE mouse_daily ADD COLUMN click_count INTEGER DEFAULT 0")
 
+	// Add key type tracking columns (migration for existing DBs)
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN letters INTEGER DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN modifiers INTEGER DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN special INTEGER DEFAULT 0")
+
 	return nil
+}
+
+// ClassifyKeycode returns the key type for a macOS keycode
+// Returns: "letter", "modifier", or "special"
+func ClassifyKeycode(keycode int) string {
+	// Physical letter keys on macOS (ANSI keyboard layout)
+	// These are physical key positions, not characters
+	switch keycode {
+	// Row 1: Q W E R T Y U I O P
+	case 12, 13, 14, 15, 17, 16, 32, 34, 31, 35:
+		return "letter"
+	// Row 2: A S D F G H J K L
+	case 0, 1, 2, 3, 5, 4, 38, 40, 37:
+		return "letter"
+	// Row 3: Z X C V B N M
+	case 6, 7, 8, 9, 11, 45, 46:
+		return "letter"
+	// Modifier keys
+	case 56, 60: // Left/Right Shift
+		return "modifier"
+	case 59, 62: // Left/Right Control
+		return "modifier"
+	case 58, 61: // Left/Right Option/Alt
+		return "modifier"
+	case 55, 54: // Left/Right Command
+		return "modifier"
+	case 63: // fn key
+		return "modifier"
+	case 57: // Caps Lock
+		return "modifier"
+	default:
+		// Everything else: numbers, punctuation, function keys, arrows, etc.
+		return "special"
+	}
 }
 
 func (s *Store) RecordKeystroke(keycode int) error {
@@ -152,12 +194,27 @@ func (s *Store) RecordKeystroke(keycode int) error {
 		return err
 	}
 
+	// Classify the key type
+	keyType := ClassifyKeycode(keycode)
+	var letterInc, modifierInc, specialInc int
+	switch keyType {
+	case "letter":
+		letterInc = 1
+	case "modifier":
+		modifierInc = 1
+	default:
+		specialInc = 1
+	}
+
 	_, err = tx.Exec(`
-		INSERT INTO daily_summary (date, keystrokes) VALUES (?, 1)
+		INSERT INTO daily_summary (date, keystrokes, letters, modifiers, special) VALUES (?, 1, ?, ?, ?)
 		ON CONFLICT(date) DO UPDATE SET
 			keystrokes = keystrokes + 1,
+			letters = letters + ?,
+			modifiers = modifiers + ?,
+			special = special + ?,
 			updated_at = CURRENT_TIMESTAMP
-	`, date)
+	`, date, letterInc, modifierInc, specialInc, letterInc, modifierInc, specialInc)
 	if err != nil {
 		return err
 	}
@@ -185,12 +242,12 @@ func (s *Store) GetDayStats(date string) (*DailyStats, error) {
 	stats.Date = date
 
 	err := s.db.QueryRow(
-		"SELECT COALESCE(keystrokes, 0), COALESCE(words, 0) FROM daily_summary WHERE date = ?",
+		"SELECT COALESCE(keystrokes, 0), COALESCE(words, 0), COALESCE(letters, 0), COALESCE(modifiers, 0), COALESCE(special, 0) FROM daily_summary WHERE date = ?",
 		date,
-	).Scan(&stats.Keystrokes, &stats.Words)
+	).Scan(&stats.Keystrokes, &stats.Words, &stats.Letters, &stats.Modifiers, &stats.Special)
 
 	if err == sql.ErrNoRows {
-		return &DailyStats{Date: date, Keystrokes: 0, Words: 0}, nil
+		return &DailyStats{Date: date, Keystrokes: 0, Words: 0, Letters: 0, Modifiers: 0, Special: 0}, nil
 	}
 	if err != nil {
 		return nil, err
@@ -473,6 +530,8 @@ const (
 	SettingTypingTestCount       = "typing_test_count"
 	SettingTypingTestTheme       = "typing_test_theme"
 	SettingTypingTestCustomTexts = "typing_test_custom_texts"
+	// Key type tracking settings
+	SettingShowKeyTypes = "show_key_types"
 )
 
 // Distance unit options
@@ -595,6 +654,17 @@ func (s *Store) GetDistanceUnit() string {
 // SetDistanceUnit sets the distance unit
 func (s *Store) SetDistanceUnit(unit string) error {
 	return s.SetSetting(SettingDistanceUnit, unit)
+}
+
+// IsShowKeyTypesEnabled returns whether key type breakdown is shown (default: false)
+func (s *Store) IsShowKeyTypesEnabled() bool {
+	val, _ := s.GetSetting(SettingShowKeyTypes)
+	return val == "true"
+}
+
+// SetShowKeyTypesEnabled sets whether key type breakdown is shown
+func (s *Store) SetShowKeyTypesEnabled(enabled bool) error {
+	return s.SetSetting(SettingShowKeyTypes, boolToString(enabled))
 }
 
 // InertiaSettings represents inertia configuration
