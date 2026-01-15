@@ -1163,6 +1163,7 @@ func (m TypingTestModel) centerContent(content string) string {
 	}
 
 	lines := strings.Split(content, "\n")
+	contentHeight := len(lines)
 
 	// Calculate max visible width of content (strip ANSI codes for width calculation)
 	maxWidth := 0
@@ -1186,10 +1187,12 @@ func (m TypingTestModel) centerContent(content string) string {
 		paddedLines[i] = strings.Repeat(" ", hPadding) + line
 	}
 
-	// Calculate vertical padding
-	vPadding := (m.height - len(lines)) / 2
-	if vPadding < 0 {
-		vPadding = 0
+	// Calculate vertical padding - ensure total height doesn't exceed terminal
+	// Leave at least 1 line margin at bottom to prevent clipping the box border
+	availableSpace := m.height - contentHeight - 1
+	vPadding := 0
+	if availableSpace > 0 {
+		vPadding = availableSpace / 2
 	}
 
 	// Add vertical padding

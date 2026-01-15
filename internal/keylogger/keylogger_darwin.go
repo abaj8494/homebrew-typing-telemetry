@@ -11,6 +11,10 @@ package keylogger
 #include <ApplicationServices/ApplicationServices.h>
 
 extern void goKeystrokeCallback(int keycode, int isRepeat);
+extern void goModifierCallback(int keycode);
+
+// Track previous modifier flags to detect key down vs key up
+static CGEventFlags previousFlags = 0;
 
 static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEventRef event, void *refcon) {
     if (type == kCGEventKeyDown) {
@@ -18,12 +22,27 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
         // Check if this is a key repeat event (holding key down)
         int isRepeat = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
         goKeystrokeCallback((int)keycode, isRepeat);
+    } else if (type == kCGEventFlagsChanged) {
+        // Handle modifier key presses (Shift, Ctrl, Command, Option, etc.)
+        CGEventFlags currentFlags = CGEventGetFlags(event);
+        CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
+
+        // Check if this is a key down (flag added) by comparing with previous state
+        // We detect key down when a modifier flag is newly set
+        CGEventFlags diff = currentFlags ^ previousFlags;
+        int isKeyDown = (currentFlags & diff) != 0;
+
+        if (isKeyDown) {
+            goModifierCallback((int)keycode);
+        }
+
+        previousFlags = currentFlags;
     }
     return event;
 }
 
 static CFMachPortRef createEventTap() {
-    CGEventMask eventMask = CGEventMaskBit(kCGEventKeyDown);
+    CGEventMask eventMask = CGEventMaskBit(kCGEventKeyDown) | CGEventMaskBit(kCGEventFlagsChanged);
     CFMachPortRef eventTap = CGEventTapCreate(
         kCGSessionEventTap,
         kCGHeadInsertEventTap,
@@ -69,6 +88,20 @@ func goKeystrokeCallback(keycode C.int, isRepeat C.int) {
 		return
 	}
 
+	mu.Lock()
+	defer mu.Unlock()
+	if keystrokeChan != nil {
+		select {
+		case keystrokeChan <- int(keycode):
+		default:
+			// Channel full, drop keystroke
+		}
+	}
+}
+
+//export goModifierCallback
+func goModifierCallback(keycode C.int) {
+	// Handle modifier key press (solo press of Shift, Ctrl, Command, etc.)
 	mu.Lock()
 	defer mu.Unlock()
 	if keystrokeChan != nil {

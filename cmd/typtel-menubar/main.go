@@ -1493,7 +1493,7 @@ func generateChartsHTML() (string, error) {
         </div>
     </div>
 
-    <div class="stats-summary" id="keyTypesStats" style="display: %s;">
+    <div class="stats-summary" id="keyTypesStats" style="display: %[1]s;">
         <div class="stat-item">
             <div class="stat-value" id="totalLetters" style="background: linear-gradient(90deg, #7bc96f, #4caf50); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">-</div>
             <div class="stat-label">Letters (A-Z)</div>
@@ -1519,7 +1519,7 @@ func generateChartsHTML() (string, error) {
         </div>
     </div>
 
-    <div class="charts-container" id="keyTypesCharts" style="display: %s;">
+    <div class="charts-container" id="keyTypesCharts" style="display: %[1]s;">
         <div class="chart-box" style="grid-column: span 2;">
             <h2>Key Type Breakdown per Day</h2>
             <canvas id="keyTypesChart"></canvas>
@@ -1537,7 +1537,7 @@ func generateChartsHTML() (string, error) {
         <div class="heatmap-box">
             <h2>Activity Heatmap (Hourly)</h2>
             <div class="hour-labels">
-                %s
+                %[2]s
             </div>
             <div class="heatmap" id="heatmapContainer">
             </div>
@@ -1715,9 +1715,8 @@ func generateChartsHTML() (string, error) {
     </script>
 </body>
 </html>`,
-		generateHourLabels(),
-		keyTypesDisplay,                                           // key types stats display
-		keyTypesDisplay,                                           // key types charts display
+		keyTypesDisplay,       // %[1]s - key types stats and charts display
+		generateHourLabels(),  // %[2]s - hour labels
 		strings.Join(weeklyData.labels, ","),
 		strings.Join(weeklyData.keystrokeData, ","),
 		strings.Join(weeklyData.wordData, ","),

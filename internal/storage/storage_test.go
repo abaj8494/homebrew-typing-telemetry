@@ -880,3 +880,225 @@ func TestFloatToStringEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+// TestClassifyKeycode tests the key type classification function
+func TestClassifyKeycode(t *testing.T) {
+	tests := []struct {
+		name     string
+		keycode  int
+		expected string
+	}{
+		// Letters (A-Z physical keys on ANSI layout)
+		{"A key (keycode 0)", 0, "letter"},
+		{"S key (keycode 1)", 1, "letter"},
+		{"D key (keycode 2)", 2, "letter"},
+		{"F key (keycode 3)", 3, "letter"},
+		{"Q key (keycode 12)", 12, "letter"},
+		{"W key (keycode 13)", 13, "letter"},
+		{"E key (keycode 14)", 14, "letter"},
+		{"Z key (keycode 6)", 6, "letter"},
+		{"M key (keycode 46)", 46, "letter"},
+
+		// Modifier keys
+		{"Left Shift (keycode 56)", 56, "modifier"},
+		{"Right Shift (keycode 60)", 60, "modifier"},
+		{"Left Control (keycode 59)", 59, "modifier"},
+		{"Right Control (keycode 62)", 62, "modifier"},
+		{"Left Option (keycode 58)", 58, "modifier"},
+		{"Right Option (keycode 61)", 61, "modifier"},
+		{"Left Command (keycode 55)", 55, "modifier"},
+		{"Right Command (keycode 54)", 54, "modifier"},
+		{"Fn key (keycode 63)", 63, "modifier"},
+		{"Caps Lock (keycode 57)", 57, "modifier"},
+
+		// Special keys (numbers, punctuation, function keys, etc.)
+		{"Space (keycode 49)", 49, "special"},
+		{"Return (keycode 36)", 36, "special"},
+		{"Tab (keycode 48)", 48, "special"},
+		{"Backspace (keycode 51)", 51, "special"},
+		{"Escape (keycode 53)", 53, "special"},
+		{"1 key (keycode 18)", 18, "special"},
+		{"0 key (keycode 29)", 29, "special"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := ClassifyKeycode(tt.keycode)
+			if result != tt.expected {
+				t.Errorf("ClassifyKeycode(%d) = %q, want %q", tt.keycode, result, tt.expected)
+			}
+		})
+	}
+}
+
+// TestKeystrokeCountingIsNotDoubled verifies that each keystroke is counted exactly once
+func TestKeystrokeCountingIsNotDoubled(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Record 100 keystrokes (using letter keycodes)
+	for i := 0; i < 100; i++ {
+		err := store.RecordKeystroke(0) // 'A' key
+		if err != nil {
+			t.Fatalf("RecordKeystroke failed: %v", err)
+		}
+	}
+
+	stats, err := store.GetTodayStats()
+	if err != nil {
+		t.Fatalf("GetTodayStats failed: %v", err)
+	}
+
+	// Verify exactly 100 keystrokes were recorded (not doubled)
+	if stats.Keystrokes != 100 {
+		t.Errorf("Expected 100 keystrokes, got %d (possible doubling bug!)", stats.Keystrokes)
+	}
+
+	// Verify key types are also correct
+	if stats.Letters != 100 {
+		t.Errorf("Expected 100 letters, got %d", stats.Letters)
+	}
+	if stats.Modifiers != 0 {
+		t.Errorf("Expected 0 modifiers, got %d", stats.Modifiers)
+	}
+	if stats.Special != 0 {
+		t.Errorf("Expected 0 special keys, got %d", stats.Special)
+	}
+}
+
+// TestWordCountingIsNotDoubled verifies that each word boundary increments word count exactly once
+func TestWordCountingIsNotDoubled(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	date := time.Now().Format("2006-01-02")
+
+	// Increment word count 50 times
+	for i := 0; i < 50; i++ {
+		err := store.IncrementWordCount(date)
+		if err != nil {
+			t.Fatalf("IncrementWordCount failed: %v", err)
+		}
+	}
+
+	stats, err := store.GetTodayStats()
+	if err != nil {
+		t.Fatalf("GetTodayStats failed: %v", err)
+	}
+
+	// Verify exactly 50 words were recorded (not doubled)
+	if stats.Words != 50 {
+		t.Errorf("Expected 50 words, got %d (possible doubling bug!)", stats.Words)
+	}
+}
+
+// TestMixedKeyTypeCounting verifies counting works correctly for mixed key types
+func TestMixedKeyTypeCounting(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Simulate typing "Hello World" with shift:
+	// Shift, H, e, l, l, o, Space, Shift, W, o, r, l, d
+	keycodes := []int{
+		56,  // Left Shift (modifier)
+		4,   // H (letter)
+		14,  // e (letter)
+		37,  // l (letter)
+		37,  // l (letter)
+		31,  // o (letter)
+		49,  // Space (special)
+		56,  // Left Shift (modifier)
+		13,  // W (letter)
+		31,  // o (letter)
+		15,  // r (letter)
+		37,  // l (letter)
+		2,   // d (letter)
+	}
+
+	for _, keycode := range keycodes {
+		err := store.RecordKeystroke(keycode)
+		if err != nil {
+			t.Fatalf("RecordKeystroke failed: %v", err)
+		}
+	}
+
+	stats, err := store.GetTodayStats()
+	if err != nil {
+		t.Fatalf("GetTodayStats failed: %v", err)
+	}
+
+	// Total keystrokes should be exactly 13
+	if stats.Keystrokes != 13 {
+		t.Errorf("Expected 13 keystrokes, got %d", stats.Keystrokes)
+	}
+
+	// Letters: H, e, l, l, o, W, o, r, l, d = 10
+	if stats.Letters != 10 {
+		t.Errorf("Expected 10 letters, got %d", stats.Letters)
+	}
+
+	// Modifiers: Shift, Shift = 2
+	if stats.Modifiers != 2 {
+		t.Errorf("Expected 2 modifiers, got %d", stats.Modifiers)
+	}
+
+	// Special: Space = 1
+	if stats.Special != 1 {
+		t.Errorf("Expected 1 special key, got %d", stats.Special)
+	}
+}
+
+// TestKeyTypeTotalsMatchKeystrokeTotal verifies that letters + modifiers + special = keystrokes
+func TestKeyTypeTotalsMatchKeystrokeTotal(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Record a variety of keystrokes
+	keycodesAndTypes := []struct {
+		keycode  int
+		keyType  string
+	}{
+		{0, "letter"},    // A
+		{1, "letter"},    // S
+		{56, "modifier"}, // Shift
+		{49, "special"},  // Space
+		{55, "modifier"}, // Command
+		{36, "special"},  // Return
+		{12, "letter"},   // Q
+		{59, "modifier"}, // Control
+		{51, "special"},  // Backspace
+	}
+
+	for _, kt := range keycodesAndTypes {
+		err := store.RecordKeystroke(kt.keycode)
+		if err != nil {
+			t.Fatalf("RecordKeystroke failed: %v", err)
+		}
+	}
+
+	stats, err := store.GetTodayStats()
+	if err != nil {
+		t.Fatalf("GetTodayStats failed: %v", err)
+	}
+
+	// Verify total matches
+	total := stats.Letters + stats.Modifiers + stats.Special
+	if total != stats.Keystrokes {
+		t.Errorf("Key type totals (%d + %d + %d = %d) don't match keystrokes (%d)",
+			stats.Letters, stats.Modifiers, stats.Special, total, stats.Keystrokes)
+	}
+
+	// Verify expected counts
+	if stats.Keystrokes != 9 {
+		t.Errorf("Expected 9 keystrokes, got %d", stats.Keystrokes)
+	}
+	if stats.Letters != 3 {
+		t.Errorf("Expected 3 letters, got %d", stats.Letters)
+	}
+	if stats.Modifiers != 3 {
+		t.Errorf("Expected 3 modifiers, got %d", stats.Modifiers)
+	}
+	if stats.Special != 3 {
+		t.Errorf("Expected 3 special keys, got %d", stats.Special)
+	}
+}
