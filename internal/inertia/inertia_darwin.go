@@ -376,48 +376,64 @@ func startKeyRepeat(keycode int) {
 			debugLog("REPEAT_DELAY_DONE keycode=%d, starting acceleration", kc)
 		}
 
-		// Phase 1: Post first synthetic event and verify event tap is working
-		// This detects secure input fields that block our events
+		// Phase 1: Wait for macOS autorepeat to confirm the event tap is working
+		// This prevents posting any synthetic events in secure input fields
+		// macOS autorepeat typically starts 400-500ms after key down
 		mu.Lock()
 		if s, ok := keyStates[kc]; ok && s.isHeld {
 			s.lastConfirmTime = time.Now()
-			s.keyCount = 1
 		}
+		confirmStart := time.Now()
 		mu.Unlock()
 
-		debugLog("REPEAT_POST keycode=%d count=1 interval=0 (first event)", kc)
-		C.postKeyEvent(C.CGKeyCode(kc), C.bool(true))
-		firstPostTime := time.Now()
+		// Wait for macOS autorepeat event (which updates lastConfirmTime via SUPPRESS_AUTOREPEAT)
+		// Use a reasonable timeout - if macOS hasn't sent autorepeat by now, something is wrong
+		const autorepeatTimeout = 400 * time.Millisecond
+		confirmDeadline := time.Now().Add(autorepeatTimeout)
 
-		// Wait for confirmation that our event came back through the event tap
-		// In secure input fields, we won't receive it back
-		const firstEventTimeout = 50 * time.Millisecond
-		confirmWait := time.NewTimer(firstEventTimeout)
-		select {
-		case <-stopCh:
-			confirmWait.Stop()
-			debugLog("REPEAT_STOPPED_SIGNAL keycode=%d (during first event wait)", kc)
-			return
-		case <-confirmWait.C:
-			// Check if we received confirmation
-			mu.RLock()
-			s, ok := keyStates[kc]
-			if !ok || !s.isHeld {
-				mu.RUnlock()
+		debugLog("WAITING_FOR_AUTOREPEAT keycode=%d timeout=%v", kc, autorepeatTimeout)
+
+	waitLoop:
+		for time.Now().Before(confirmDeadline) {
+			select {
+			case <-stopCh:
+				debugLog("REPEAT_STOPPED_SIGNAL keycode=%d (during autorepeat wait)", kc)
 				return
-			}
-			// If lastConfirmTime hasn't been updated since we posted, we're in secure input
-			if !s.lastConfirmTime.After(firstPostTime) {
+			case <-time.After(20 * time.Millisecond):
+				mu.RLock()
+				s, ok := keyStates[kc]
+				if !ok || !s.isHeld {
+					mu.RUnlock()
+					debugLog("KEY_RELEASED keycode=%d (during autorepeat wait)", kc)
+					return
+				}
+				// Check if we received macOS autorepeat (lastConfirmTime updated by SUPPRESS_AUTOREPEAT)
+				if s.lastConfirmTime.After(confirmStart) {
+					mu.RUnlock()
+					debugLog("AUTOREPEAT_CONFIRMED keycode=%d, event tap working, starting acceleration", kc)
+					break waitLoop
+				}
 				mu.RUnlock()
-				debugLog("SECURE_INPUT_DETECTED keycode=%d (first event not confirmed after %v)", kc, firstEventTimeout)
-				stopKeyRepeat(kc)
-				return
 			}
-			mu.RUnlock()
-			debugLog("FIRST_EVENT_CONFIRMED keycode=%d, continuing acceleration", kc)
 		}
 
-		// Phase 2: Normal acceleration loop
+		// Final check - did we get confirmation?
+		mu.RLock()
+		s, ok := keyStates[kc]
+		if !ok || !s.isHeld {
+			mu.RUnlock()
+			return
+		}
+		if !s.lastConfirmTime.After(confirmStart) {
+			mu.RUnlock()
+			debugLog("NO_AUTOREPEAT keycode=%d after %v (secure input or key released)", kc, autorepeatTimeout)
+			stopKeyRepeat(kc)
+			return
+		}
+		s.keyCount = 0 // Reset for acceleration phase
+		mu.RUnlock()
+
+		// Phase 2: Normal acceleration loop (now we're confident event tap is working)
 		for {
 			mu.RLock()
 			s, ok := keyStates[kc]
