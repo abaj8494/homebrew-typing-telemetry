@@ -144,6 +144,7 @@ var (
 	mInertiaEnabled     *systray.MenuItem
 	mInertiaUltraFast   *systray.MenuItem
 	mInertiaVeryFast    *systray.MenuItem
+	mInertiaPrettyFast  *systray.MenuItem
 	mInertiaFast        *systray.MenuItem
 	mInertiaMedium      *systray.MenuItem
 	mInertiaSlow        *systray.MenuItem
@@ -545,6 +546,7 @@ func buildMenu() {
 	mMaxSpeed := mSettings.AddSubMenuItem("   Max Speed", "")
 	mInertiaUltraFast = mMaxSpeed.AddSubMenuItemCheckbox("Ultra Fast (~140 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedUltraFast)
 	mInertiaVeryFast = mMaxSpeed.AddSubMenuItemCheckbox("Very Fast (~125 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedVeryFast)
+	mInertiaPrettyFast = mMaxSpeed.AddSubMenuItemCheckbox("Pretty Fast (~100 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedPrettyFast)
 	mInertiaFast = mMaxSpeed.AddSubMenuItemCheckbox("Fast (~83 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedFast)
 	mInertiaMedium = mMaxSpeed.AddSubMenuItemCheckbox("Medium (~50 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedMedium)
 	mInertiaSlow = mMaxSpeed.AddSubMenuItemCheckbox("Slow (~20 keys/sec)", "", inertiaSettings.MaxSpeed == storage.InertiaSpeedSlow)
@@ -717,6 +719,11 @@ func handleSettingsClicks() {
 			updateInertiaSpeedChecks(storage.InertiaSpeedVeryFast)
 			updateInertiaConfig()
 
+		case <-mInertiaPrettyFast.ClickedCh:
+			store.SetInertiaMaxSpeed(storage.InertiaSpeedPrettyFast)
+			updateInertiaSpeedChecks(storage.InertiaSpeedPrettyFast)
+			updateInertiaConfig()
+
 		case <-mInertiaFast.ClickedCh:
 			store.SetInertiaMaxSpeed(storage.InertiaSpeedFast)
 			updateInertiaSpeedChecks(storage.InertiaSpeedFast)
@@ -788,6 +795,7 @@ func handleSettingsClicks() {
 func updateInertiaSpeedChecks(speed string) {
 	mInertiaUltraFast.Uncheck()
 	mInertiaVeryFast.Uncheck()
+	mInertiaPrettyFast.Uncheck()
 	mInertiaFast.Uncheck()
 	mInertiaMedium.Uncheck()
 	mInertiaSlow.Uncheck()
@@ -796,6 +804,8 @@ func updateInertiaSpeedChecks(speed string) {
 		mInertiaUltraFast.Check()
 	case storage.InertiaSpeedVeryFast:
 		mInertiaVeryFast.Check()
+	case storage.InertiaSpeedPrettyFast:
+		mInertiaPrettyFast.Check()
 	case storage.InertiaSpeedFast:
 		mInertiaFast.Check()
 	case storage.InertiaSpeedMedium:

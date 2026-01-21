@@ -575,11 +575,12 @@ const (
 
 // Inertia max speed options (capped at what terminals/editors can handle)
 const (
-	InertiaSpeedUltraFast = "ultra_fast" // Cap at ~140 keys/sec (pushing limits)
-	InertiaSpeedVeryFast  = "very_fast"  // Cap at ~125 keys/sec
-	InertiaSpeedFast      = "fast"       // Cap at ~83 keys/sec
-	InertiaSpeedMedium    = "medium"     // Cap at ~50 keys/sec
-	InertiaSpeedSlow      = "slow"       // Cap at ~20 keys/sec
+	InertiaSpeedUltraFast  = "ultra_fast"  // Cap at ~140 keys/sec (pushing limits)
+	InertiaSpeedVeryFast   = "very_fast"   // Cap at ~125 keys/sec
+	InertiaSpeedPrettyFast = "pretty_fast" // Cap at ~100 keys/sec
+	InertiaSpeedFast       = "fast"        // Cap at ~83 keys/sec
+	InertiaSpeedMedium     = "medium"      // Cap at ~50 keys/sec
+	InertiaSpeedSlow       = "slow"        // Cap at ~20 keys/sec
 )
 
 // MenubarSettings represents what to show in the menubar

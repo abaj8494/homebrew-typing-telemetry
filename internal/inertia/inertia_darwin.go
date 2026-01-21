@@ -74,9 +74,12 @@ static void stopInertiaEventLoop() {
 }
 
 // Synthesize a key event
+// Marks it as autorepeat so keylogger doesn't count synthetic events as separate keystrokes
 static void postKeyEvent(CGKeyCode keycode, bool keyDown) {
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, keycode, keyDown);
     if (event != NULL) {
+        // Mark as autorepeat so keylogger ignores these - holding a key counts as 1 keystroke
+        CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, 1);
         CGEventPost(kCGHIDEventTap, event);
         CFRelease(event);
     }
@@ -170,11 +173,12 @@ const baseRepeatInterval = 35
 // Max speed caps (repeat interval in ms)
 // Capped at what terminals/editors can reasonably handle
 var maxSpeedCaps = map[string]int{
-	"ultra_fast": 7,  // ~140 keys/sec (pushing terminal limits)
-	"very_fast":  8,  // ~125 keys/sec
-	"fast":       12, // ~83 keys/sec
-	"medium":     20, // ~50 keys/sec
-	"slow":       50, // ~20 keys/sec
+	"ultra_fast":  7,  // ~140 keys/sec (pushing terminal limits)
+	"very_fast":   8,  // ~125 keys/sec
+	"pretty_fast": 10, // ~100 keys/sec
+	"fast":        12, // ~83 keys/sec
+	"medium":      20, // ~50 keys/sec
+	"slow":        50, // ~20 keys/sec
 }
 
 // Safety timeout: if we don't receive any events for this long while a key is "held",
