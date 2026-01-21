@@ -139,6 +139,17 @@ func initSchema(db *sql.DB) error {
 		current_distance REAL DEFAULT 0,
 		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+
+	CREATE TABLE IF NOT EXISTS odometer_history (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		start_time DATETIME NOT NULL,
+		end_time DATETIME NOT NULL,
+		keystrokes INTEGER DEFAULT 0,
+		words INTEGER DEFAULT 0,
+		clicks INTEGER DEFAULT 0,
+		distance REAL DEFAULT 0,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -548,6 +559,7 @@ const (
 	SettingTypingTestCount       = "typing_test_count"
 	SettingTypingTestTheme       = "typing_test_theme"
 	SettingTypingTestCustomTexts = "typing_test_custom_texts"
+	SettingTypingTestLanguage    = "typing_test_language"
 	// Key type tracking settings
 	SettingShowKeyTypes = "show_key_types"
 	// Odometer settings
@@ -924,6 +936,20 @@ func (s *Store) SetTypingTestCustomTexts(texts string) error {
 	return s.SetSetting(SettingTypingTestCustomTexts, texts)
 }
 
+// GetTypingTestLanguage returns the typing test language (default: "us")
+func (s *Store) GetTypingTestLanguage() string {
+	val, _ := s.GetSetting(SettingTypingTestLanguage)
+	if val == "" {
+		return "us"
+	}
+	return val
+}
+
+// SetTypingTestLanguage sets the typing test language
+func (s *Store) SetTypingTestLanguage(language string) error {
+	return s.SetSetting(SettingTypingTestLanguage, language)
+}
+
 // OdometerSession represents the current odometer session state
 type OdometerSession struct {
 	IsActive          bool
@@ -1006,9 +1032,35 @@ func (s *Store) StartOdometer() error {
 	return err
 }
 
-// StopOdometer stops the current odometer session
+// StopOdometer stops the current odometer session and saves it to history
 func (s *Store) StopOdometer() error {
-	_, err := s.db.Exec(`UPDATE odometer_session SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
+	// Get current session to save to history
+	session, err := s.GetOdometerSession()
+	if err != nil {
+		return err
+	}
+
+	// Only save to history if there was actual activity
+	if session != nil && session.IsActive && !session.StartTime.IsZero() {
+		keystrokes := session.CurrentKeystrokes - session.StartKeystrokes
+		words := session.CurrentWords - session.StartWords
+		clicks := session.CurrentClicks - session.StartClicks
+		distance := session.CurrentDistance - session.StartDistance
+
+		// Only save if there's meaningful activity
+		if keystrokes > 0 || words > 0 || clicks > 0 || distance > 0 {
+			_, err = s.db.Exec(`
+				INSERT INTO odometer_history (start_time, end_time, keystrokes, words, clicks, distance)
+				VALUES (?, ?, ?, ?, ?, ?)
+			`, session.StartTime.Format(time.RFC3339), time.Now().Format(time.RFC3339),
+				keystrokes, words, clicks, distance)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	_, err = s.db.Exec(`UPDATE odometer_session SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
 	return err
 }
 
@@ -1058,4 +1110,55 @@ func (s *Store) GetOdometerHotkey() string {
 // SetOdometerHotkey sets the odometer hotkey
 func (s *Store) SetOdometerHotkey(hotkey string) error {
 	return s.SetSetting(SettingOdometerHotkey, hotkey)
+}
+
+// OdometerHistoryEntry represents a completed odometer session
+type OdometerHistoryEntry struct {
+	ID         int64
+	StartTime  time.Time
+	EndTime    time.Time
+	Keystrokes int64
+	Words      int64
+	Clicks     int64
+	Distance   float64
+}
+
+// GetOdometerHistory returns all odometer history entries, most recent first
+func (s *Store) GetOdometerHistory() ([]OdometerHistoryEntry, error) {
+	rows, err := s.db.Query(`
+		SELECT id, start_time, end_time, keystrokes, words, clicks, distance
+		FROM odometer_history
+		ORDER BY start_time DESC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var history []OdometerHistoryEntry
+	for rows.Next() {
+		var entry OdometerHistoryEntry
+		var startTimeStr, endTimeStr string
+		err := rows.Scan(&entry.ID, &startTimeStr, &endTimeStr, &entry.Keystrokes,
+			&entry.Words, &entry.Clicks, &entry.Distance)
+		if err != nil {
+			continue
+		}
+		entry.StartTime, _ = time.Parse(time.RFC3339, startTimeStr)
+		entry.EndTime, _ = time.Parse(time.RFC3339, endTimeStr)
+		history = append(history, entry)
+	}
+	return history, nil
+}
+
+// DeleteOdometerHistoryEntry deletes a specific odometer history entry
+func (s *Store) DeleteOdometerHistoryEntry(id int64) error {
+	_, err := s.db.Exec(`DELETE FROM odometer_history WHERE id = ?`, id)
+	return err
+}
+
+// ClearOdometerHistory deletes all odometer history entries
+func (s *Store) ClearOdometerHistory() error {
+	_, err := s.db.Exec(`DELETE FROM odometer_history`)
+	return err
 }

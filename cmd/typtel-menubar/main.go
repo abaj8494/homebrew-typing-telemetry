@@ -187,7 +187,8 @@ var (
 	mOdometer        *systray.MenuItem
 	mOdometerStatus  *systray.MenuItem
 	mOdometerToggle  *systray.MenuItem
-	mOdometerReset   *systray.MenuItem
+	mOdometerReset        *systray.MenuItem
+	mOdometerClearHistory *systray.MenuItem
 	mOdometerHotkey  *systray.MenuItem
 	// Odometer hotkey settings submenu items
 	mHotkeyCmdCtrlO   *systray.MenuItem
@@ -246,14 +247,22 @@ func main() {
 	// Process keystrokes in background
 	go func() {
 		for keycode := range keystrokeChan {
-			// Track modifier key state
-			updateModifierState(keycode)
-
-			// Check for odometer hotkey
+			// Check for odometer hotkey BEFORE updating modifier state
+			// (updateModifierState resets modifiers on non-modifier keys)
 			if checkOdometerHotkey(keycode) {
+				// Reset modifier state after hotkey triggered
+				modifierMutex.Lock()
+				modifierState.cmd = false
+				modifierState.ctrl = false
+				modifierState.opt = false
+				modifierState.shift = false
+				modifierMutex.Unlock()
 				toggleOdometer()
 				continue // Don't count hotkey as regular keystroke
 			}
+
+			// Track modifier key state
+			updateModifierState(keycode)
 
 			if err := store.RecordKeystroke(keycode); err != nil {
 				log.Printf("Failed to record keystroke: %v", err)
@@ -461,6 +470,7 @@ func buildMenu() {
 	mOdometerToggle = mOdometer.AddSubMenuItem(fmt.Sprintf("%s (%s)", toggleText, hotkeyDisplay), "")
 
 	mOdometerReset = mOdometer.AddSubMenuItem("Reset Odometer", "")
+	mOdometerClearHistory = mOdometer.AddSubMenuItem("Clear History", "")
 
 	mOdometer.AddSubMenuItem("", "").Disable() // Separator
 
@@ -1255,6 +1265,10 @@ func handleOdometerClicks() {
 			updateOdometerDisplay()
 			log.Println("Odometer reset")
 
+		case <-mOdometerClearHistory.ClickedCh:
+			store.ClearOdometerHistory()
+			log.Println("Odometer history cleared")
+
 		case <-mHotkeyCmdCtrlO.ClickedCh:
 			store.SetOdometerHotkey("cmd+ctrl+o")
 			updateHotkeyChecks("cmd+ctrl+o")
@@ -1704,6 +1718,28 @@ func generateChartsHTML() (string, error) {
 		odometerDistanceFeet = mousetracker.PixelsToFeet(odometerSession.CurrentDistance - odometerSession.StartDistance)
 	}
 
+	// Get odometer history
+	odometerHistory, _ := store.GetOdometerHistory()
+	var historyJSON strings.Builder
+	historyJSON.WriteString("[")
+	for i, entry := range odometerHistory {
+		if i > 0 {
+			historyJSON.WriteString(",")
+		}
+		duration := entry.EndTime.Sub(entry.StartTime)
+		historyJSON.WriteString(fmt.Sprintf(`{"id":%d,"startTime":"%s","endTime":"%s","keystrokes":%d,"words":%d,"clicks":%d,"distanceFeet":%.2f,"durationSecs":%d}`,
+			entry.ID,
+			entry.StartTime.Format("Jan 2, 2006 3:04 PM"),
+			entry.EndTime.Format("Jan 2, 2006 3:04 PM"),
+			entry.Keystrokes,
+			entry.Words,
+			entry.Clicks,
+			mousetracker.PixelsToFeet(entry.Distance),
+			int64(duration.Seconds()),
+		))
+	}
+	historyJSON.WriteString("]")
+
 	// Determine if key types section should be visible
 	keyTypesDisplay := "none"
 	if showKeyTypes {
@@ -2084,9 +2120,9 @@ func generateChartsHTML() (string, error) {
 
     <div class="odometer-display" id="odometerDisplay">
         <div class="odometer-box">
-            <h2>⏱️ Odometer Session</h2>
+            <h2>⏱️ Current Session</h2>
             <div class="odometer-status" id="odometerStatusBox">Inactive</div>
-            <table class="odometer-table">
+            <table class="odometer-table" id="currentSessionTable">
                 <thead>
                     <tr>
                         <th>Metric</th>
@@ -2120,6 +2156,27 @@ func generateChartsHTML() (string, error) {
                     </tr>
                 </tbody>
             </table>
+        </div>
+        <div class="odometer-box" style="margin-top: 20px;">
+            <h2>📜 Session History</h2>
+            <div id="historyTableContainer">
+                <table class="odometer-table" id="historyTable">
+                    <thead>
+                        <tr>
+                            <th>Start</th>
+                            <th>End</th>
+                            <th>Duration</th>
+                            <th>Keystrokes</th>
+                            <th>Words</th>
+                            <th>Clicks</th>
+                            <th>Distance</th>
+                        </tr>
+                    </thead>
+                    <tbody id="historyTableBody">
+                    </tbody>
+                </table>
+                <p id="noHistoryMsg" style="color: #888; text-align: center; padding: 20px;">No history yet. Complete an odometer session to see it here.</p>
+            </div>
         </div>
     </div>
 
@@ -2182,7 +2239,8 @@ func generateChartsHTML() (string, error) {
                 keystrokes: %d,
                 words: %d,
                 clicks: %d,
-                distanceFeet: %.2f
+                distanceFeet: %.2f,
+                history: %s
             }
         };
 
@@ -2325,6 +2383,17 @@ func generateChartsHTML() (string, error) {
             document.getElementById('heatmapContainer').innerHTML = d.heatmap;
         }
 
+        function formatDuration(totalSeconds) {
+            const hours = Math.floor(totalSeconds / 3600);
+            const minutes = Math.floor((totalSeconds %% 3600) / 60);
+            const seconds = totalSeconds %% 60;
+            let durationStr = '';
+            if (hours > 0) durationStr += hours + 'h ';
+            if (minutes > 0 || hours > 0) durationStr += minutes + 'm ';
+            durationStr += seconds + 's';
+            return durationStr || '0s';
+        }
+
         function updateOdometerDisplay() {
             const od = data.odometer;
             const unit = document.getElementById('unitSelect').value;
@@ -2349,16 +2418,34 @@ func generateChartsHTML() (string, error) {
                 const start = new Date(od.startTime);
                 const now = new Date();
                 const totalSeconds = Math.floor((now - start) / 1000);
-                const hours = Math.floor(totalSeconds / 3600);
-                const minutes = Math.floor((totalSeconds %% 3600) / 60);
-                const seconds = totalSeconds %% 60;
-                let durationStr = '';
-                if (hours > 0) durationStr += hours + 'h ';
-                if (minutes > 0 || hours > 0) durationStr += minutes + 'm ';
-                durationStr += seconds + 's';
-                document.getElementById('odometerDuration').textContent = durationStr;
+                document.getElementById('odometerDuration').textContent = formatDuration(totalSeconds);
             } else {
                 document.getElementById('odometerDuration').textContent = '-';
+            }
+
+            // Populate history table
+            const historyBody = document.getElementById('historyTableBody');
+            const noHistoryMsg = document.getElementById('noHistoryMsg');
+            const historyTable = document.getElementById('historyTable');
+
+            historyBody.innerHTML = '';
+            if (od.history && od.history.length > 0) {
+                historyTable.style.display = 'table';
+                noHistoryMsg.style.display = 'none';
+                od.history.forEach(function(entry) {
+                    var row = document.createElement('tr');
+                    row.innerHTML = '<td>' + entry.startTime + '</td>' +
+                        '<td>' + entry.endTime + '</td>' +
+                        '<td class="odometer-value">' + formatDuration(entry.durationSecs) + '</td>' +
+                        '<td class="odometer-value">' + formatNumber(entry.keystrokes) + '</td>' +
+                        '<td class="odometer-value">' + formatNumber(entry.words) + '</td>' +
+                        '<td class="odometer-value">' + formatNumber(entry.clicks) + '</td>' +
+                        '<td class="odometer-value">' + formatDistance(entry.distanceFeet, unit) + '</td>';
+                    historyBody.appendChild(row);
+                });
+            } else {
+                historyTable.style.display = 'none';
+                noHistoryMsg.style.display = 'block';
             }
         }
 
@@ -2430,6 +2517,7 @@ func generateChartsHTML() (string, error) {
 		odometerWords,
 		odometerClicks,
 		odometerDistanceFeet,
+		historyJSON.String(),
 	)
 
 	dataDir, err := getLogDir()

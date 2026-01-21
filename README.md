@@ -22,6 +22,8 @@ Typtel requires accessibility permissions to capture input events:
 
 > **IMPORTANT: After upgrading:** macOS requires you to re-grant permissions when the app binary changes. If Typtel won't launch after an upgrade, remove it from Accessibility and re-add it.
 
+> **Note on uninstalling:** When you delete Typtel.app, macOS may not automatically remove it from the Accessibility list. This is a macOS limitation. To clean up, manually remove the entry from System Settings > Privacy & Security > Accessibility before or after deleting the app.
+
 ## CLI
 
 The `typtel` command provides a terminal interface to your typing data.
@@ -32,6 +34,7 @@ typtel today        # Today's keystroke count
 typtel stats        # Detailed statistics
 typtel test         # Typing speed test
 typtel test -w 50   # Test with 50 words
+typtel test -l au   # Use AU English spelling (saved as default)
 ```
 
 ### Typing Test

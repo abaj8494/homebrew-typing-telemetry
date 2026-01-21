@@ -22,6 +22,7 @@ var (
 	// Flags for test command
 	testFile      string
 	testWordCount int
+	testLanguage  string
 )
 
 var rootCmd = &cobra.Command{
@@ -89,6 +90,7 @@ var versionCmd = &cobra.Command{
 func init() {
 	testCmd.Flags().StringVarP(&testFile, "file", "f", "", "Path to text file with words/passages")
 	testCmd.Flags().IntVarP(&testWordCount, "words", "w", 25, "Number of words in the test")
+	testCmd.Flags().StringVarP(&testLanguage, "language", "l", "", "Language variant: us, au (saved as default)")
 
 	rootCmd.AddCommand(statsCmd)
 	rootCmd.AddCommand(todayCmd)
@@ -136,6 +138,17 @@ func runTypingTest() error {
 		return fmt.Errorf("failed to open storage: %w", err)
 	}
 	defer store.Close()
+
+	// If language specified via CLI, save it as the new default
+	if testLanguage != "" {
+		lang := testLanguage
+		if lang == "au" || lang == "AU" {
+			lang = tui.LanguageAU
+		} else {
+			lang = tui.LanguageUS
+		}
+		store.SetTypingTestLanguage(lang)
+	}
 
 	p := tea.NewProgram(
 		tui.NewTypingTestWithStore(testFile, testWordCount, store),

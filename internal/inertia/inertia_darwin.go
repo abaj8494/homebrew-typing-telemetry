@@ -177,6 +177,16 @@ var maxSpeedCaps = map[string]int{
 	"slow":       50, // ~20 keys/sec
 }
 
+// Keys excluded from inertia acceleration (action keys that trigger system behavior)
+var excludedKeycodes = map[int]bool{
+	48: true, // Tab - triggers UI actions, shouldn't accelerate
+	53: true, // Escape - menu/cancel actions
+	36: true, // Return/Enter - submit actions
+	76: true, // Numpad Enter
+	51: true, // Delete/Backspace - already has system repeat
+	117: true, // Forward Delete
+}
+
 // State tracking
 type keyState struct {
 	isHeld        bool
@@ -487,12 +497,18 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 			debugLog("IGNORE_LATE_SYNTHETIC keycode=%d (released %v ago)", keycode, time.Since(state.lastStopTime))
 			return C.nullEventRef()
 		} else {
-			// Initial key press - stop inertia on all other held keys first
-			// This prevents the "swarm of characters" issue when switching keys
-			stopOtherKeys(keycode)
-			// Then start our accelerating repeat for this key
-			debugLog("START_TRACKING keycode=%d", keycode)
-			startKeyRepeat(keycode)
+			// Check if this key is excluded from inertia (action keys like Tab, Escape, Enter)
+			if excludedKeycodes[keycode] {
+				debugLog("EXCLUDED_KEY keycode=%d (action key, no inertia)", keycode)
+				// Let the event through without inertia acceleration
+			} else {
+				// Initial key press - stop inertia on all other held keys first
+				// This prevents the "swarm of characters" issue when switching keys
+				stopOtherKeys(keycode)
+				// Then start our accelerating repeat for this key
+				debugLog("START_TRACKING keycode=%d", keycode)
+				startKeyRepeat(keycode)
+			}
 		}
 
 	case C.kCGEventKeyUp:

@@ -90,6 +90,7 @@ type TestOptions struct {
 	CustomPaceWPM float64       // Custom pace WPM target
 	Theme         string        // Color theme
 	TestType      string        // "normal" or "custom"
+	Language      string        // "us" or "au"
 }
 
 // Option represents a single option in the menu
@@ -165,6 +166,7 @@ func NewTypingTestWithStore(sourceFile string, wordCount int, store *storage.Sto
 		CustomPaceWPM: 60.0,
 		Theme:         "default",
 		TestType:      "normal",
+		Language:      LanguageUS,
 	}
 
 	allOptions := []Option{
@@ -215,6 +217,14 @@ func NewTypingTestWithStore(sourceFile string, wordCount int, store *storage.Sto
 			Value:       true, // Enabled by default
 		},
 		{
+			ID:          "language",
+			Name:        "Language",
+			Description: "English spelling variant",
+			Type:        "choice",
+			Choices:     []string{"US English", "AU English"},
+			Value:       "US English",
+		},
+		{
 			ID:          "pace_caret",
 			Name:        "Pace Caret",
 			Description: "Ghost cursor to pace against",
@@ -255,6 +265,23 @@ func NewTypingTestWithStore(sourceFile string, wordCount int, store *storage.Sto
 		if customTextsStr != "" {
 			m.customTexts = strings.Split(customTextsStr, "\n---\n")
 		}
+
+		// Load language preference
+		lang := store.GetTypingTestLanguage()
+		m.options.Language = lang
+		// Update the allOptions value
+		langDisplay := "US English"
+		if lang == LanguageAU {
+			langDisplay = "AU English"
+		}
+		for i := range m.allOptions {
+			if m.allOptions[i].ID == "language" {
+				m.allOptions[i].Value = langDisplay
+				break
+			}
+		}
+		// Load word list for the language
+		defaultWords = LoadWordListsForLanguage(lang)
 	}
 
 	m.targetText = m.generateText()
@@ -525,6 +552,22 @@ func (m *TypingTestModel) applyOption(opt Option, choiceIdx int) {
 		if idx := findOptIdx("punctuation"); idx >= 0 {
 			m.allOptions[idx].Value = m.options.Punctuation
 		}
+	case "language":
+		langChoice := opt.Choices[choiceIdx]
+		if langChoice == "US English" {
+			m.options.Language = LanguageUS
+		} else {
+			m.options.Language = LanguageAU
+		}
+		if idx := findOptIdx("language"); idx >= 0 {
+			m.allOptions[idx].Value = langChoice
+		}
+		// Save to storage
+		if m.store != nil {
+			m.store.SetTypingTestLanguage(m.options.Language)
+		}
+		// Reload word list for new language
+		defaultWords = LoadWordListsForLanguage(m.options.Language)
 	case "pace_caret":
 		switch opt.Choices[choiceIdx] {
 		case "off":
