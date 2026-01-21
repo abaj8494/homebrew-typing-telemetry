@@ -73,16 +73,26 @@ static void stopInertiaEventLoop() {
     CFRunLoopStop(CFRunLoopGetCurrent());
 }
 
+// Magic value to identify inertia-generated synthetic events
+// "INER" in ASCII = 0x494E4552
+#define INERTIA_EVENT_MARKER 0x494E4552
+
 // Synthesize a key event
-// Marks it as autorepeat so keylogger doesn't count synthetic events as separate keystrokes
+// Marks it with user data so keylogger can identify and ignore synthetic events
 static void postKeyEvent(CGKeyCode keycode, bool keyDown) {
     CGEventRef event = CGEventCreateKeyboardEvent(NULL, keycode, keyDown);
     if (event != NULL) {
-        // Mark as autorepeat so keylogger ignores these - holding a key counts as 1 keystroke
-        CGEventSetIntegerValueField(event, kCGKeyboardEventAutorepeat, 1);
+        // Mark with custom user data so keylogger can ignore these
+        // Do NOT use kCGKeyboardEventAutorepeat - apps ignore autorepeat events!
+        CGEventSetIntegerValueField(event, kCGEventSourceUserData, INERTIA_EVENT_MARKER);
         CGEventPost(kCGHIDEventTap, event);
         CFRelease(event);
     }
+}
+
+// Check if event is from inertia (synthetic)
+static bool isInertiaEvent(CGEventRef event) {
+    return CGEventGetIntegerValueField(event, kCGEventSourceUserData) == INERTIA_EVENT_MARKER;
 }
 
 // Check if event is an autorepeat
