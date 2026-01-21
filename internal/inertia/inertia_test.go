@@ -143,7 +143,7 @@ func TestAccelerationTableConsistency(t *testing.T) {
 
 func TestMaxSpeedCaps(t *testing.T) {
 	// Verify all expected speed caps exist
-	expectedSpeeds := []string{"ultra_fast", "very_fast", "fast", "medium", "slow"}
+	expectedSpeeds := []string{"ultra_fast", "very_fast", "pretty_fast", "fast", "medium", "slow"}
 	for _, speed := range expectedSpeeds {
 		if _, ok := maxSpeedCaps[speed]; !ok {
 			t.Errorf("Missing speed cap for %q", speed)
@@ -154,8 +154,11 @@ func TestMaxSpeedCaps(t *testing.T) {
 	if maxSpeedCaps["ultra_fast"] >= maxSpeedCaps["very_fast"] {
 		t.Error("ultra_fast should have lower interval than very_fast")
 	}
-	if maxSpeedCaps["very_fast"] >= maxSpeedCaps["fast"] {
-		t.Error("very_fast should have lower interval than fast")
+	if maxSpeedCaps["very_fast"] >= maxSpeedCaps["pretty_fast"] {
+		t.Error("very_fast should have lower interval than pretty_fast")
+	}
+	if maxSpeedCaps["pretty_fast"] >= maxSpeedCaps["fast"] {
+		t.Error("pretty_fast should have lower interval than fast")
 	}
 	if maxSpeedCaps["fast"] >= maxSpeedCaps["medium"] {
 		t.Error("fast should have lower interval than medium")
