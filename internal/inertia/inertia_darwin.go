@@ -527,7 +527,13 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 			debugLog("PASSTHROUGH keycode=%d (autorepeat but not tracked)", keycode)
 		} else if alreadyHeld {
 			// This is our synthetic event - let it through but don't restart
-			debugLog("PASSTHROUGH_SYNTHETIC keycode=%d", keycode)
+			// Update lastConfirmTime - receiving our own event proves event tap is working
+			mu.Lock()
+			if s, ok := keyStates[keycode]; ok && s.isHeld {
+				s.lastConfirmTime = time.Now()
+			}
+			mu.Unlock()
+			debugLog("PASSTHROUGH_SYNTHETIC keycode=%d (confirmed event tap working)", keycode)
 		} else if recentlyReleased {
 			// Synthetic event that arrived after keyUp - ignore to prevent restart
 			debugLog("IGNORE_LATE_SYNTHETIC keycode=%d (released %v ago)", keycode, time.Since(state.lastStopTime))
