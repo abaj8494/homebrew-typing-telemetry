@@ -60,6 +60,9 @@ func TestGetAccelerationStep(t *testing.T) {
 }
 
 func TestGetRepeatInterval(t *testing.T) {
+	// New behavior: AccelRate scales keyCount to affect how quickly you progress through steps
+	// But AccelRate does NOT affect the final interval calculation
+	// This ensures all AccelRate settings reach the same max speed, just at different rates
 	tests := []struct {
 		name      string
 		keyCount  int
@@ -67,30 +70,43 @@ func TestGetRepeatInterval(t *testing.T) {
 		accelRate float64
 		expected  time.Duration
 	}{
-		// Step 1 (keyCount < 7), base interval / (1 * accelRate)
+		// Step 1 (scaledKeyCount < 7), interval = 35/1 = 35ms
 		{"step1 fast rate1", 0, "fast", 1.0, 35 * time.Millisecond},
-		{"step1 fast rate2", 0, "fast", 2.0, 17 * time.Millisecond},
+		{"step1 fast rate2", 0, "fast", 2.0, 35 * time.Millisecond}, // AccelRate doesn't affect interval directly
 
-		// Step 2 (keyCount >= 7), base interval / (2 * accelRate)
-		{"step2 fast rate1", 7, "fast", 1.0, 17 * time.Millisecond},
-		{"step2 fast rate2", 10, "fast", 2.0, 12 * time.Millisecond}, // 35/(2*2) = 8.75, clamped to 12
+		// Step 2 (scaledKeyCount >= 7), interval = 35/2 = 17ms
+		{"step2 fast rate1", 7, "fast", 1.0, 17 * time.Millisecond}, // scaledKeyCount=7, step=2
 
-		// Max speed caps
-		{"step9 ultra_fast", 100, "ultra_fast", 1.0, 7 * time.Millisecond}, // 35/9 = 3.88, clamped to 7
-		{"step9 very_fast", 100, "very_fast", 1.0, 8 * time.Millisecond},   // clamped to 8
-		{"step9 fast", 100, "fast", 1.0, 12 * time.Millisecond},            // clamped to 12
-		{"step9 medium", 100, "medium", 1.0, 20 * time.Millisecond},        // clamped to 20
-		{"step9 slow", 100, "slow", 1.0, 50 * time.Millisecond},            // clamped to 50
+		// Higher accelRate reaches higher steps faster
+		// keyCount=10, accelRate=2.0: scaledKeyCount=20, step=4, interval=35/4=8.75ms, clamped to 12 (fast cap)
+		{"step4 fast rate2", 10, "fast", 2.0, 12 * time.Millisecond},
+
+		// Max speed caps - all reach same max speed regardless of AccelRate
+		{"step9 ultra_fast", 100, "ultra_fast", 1.0, 7 * time.Millisecond},
+		{"step9 very_fast", 100, "very_fast", 1.0, 8 * time.Millisecond},
+		{"step9 fast", 100, "fast", 1.0, 12 * time.Millisecond},
+		{"step9 medium", 100, "medium", 1.0, 20 * time.Millisecond},
+		{"step9 slow", 100, "slow", 1.0, 50 * time.Millisecond},
+
+		// Critical test: Same max speed reached with different AccelRates
+		{"same_max_0.25x", 100, "ultra_fast", 0.25, 7 * time.Millisecond}, // scaledKeyCount=25, step=6, 35/6=5.8, clamped to 7
+		{"same_max_0.5x", 100, "ultra_fast", 0.5, 7 * time.Millisecond},   // scaledKeyCount=50, step=9, 35/9=3.9, clamped to 7
+		{"same_max_1x", 100, "ultra_fast", 1.0, 7 * time.Millisecond},     // scaledKeyCount=100, step=9, clamped to 7
+		{"same_max_4x", 100, "ultra_fast", 4.0, 7 * time.Millisecond},     // scaledKeyCount=400, step=9, clamped to 7
 
 		// Unknown max speed should default to "fast"
 		{"step9 invalid speed", 100, "unknown", 1.0, 12 * time.Millisecond},
 		{"step9 empty speed", 100, "", 1.0, 12 * time.Millisecond},
 
-		// High acceleration rate
-		{"step5 high accel", 21, "ultra_fast", 3.0, 7 * time.Millisecond}, // 35/(5*3)=2.33, clamped to 7
+		// High acceleration rate reaches max step faster
+		// keyCount=7, accelRate=4.0: scaledKeyCount=28, step=8, interval=35/8=4.375ms, clamped to 7
+		{"high accel reaches max", 7, "ultra_fast", 4.0, 7 * time.Millisecond},
 
-		// Low acceleration rate
-		{"step1 low accel", 0, "fast", 0.5, 70 * time.Millisecond}, // 35/(1*0.5) = 70, not clamped
+		// Low acceleration rate progresses slower through steps
+		// keyCount=7, accelRate=0.5: scaledKeyCount=3.5->3, step=1, interval=35ms
+		{"low accel stays slow", 7, "fast", 0.5, 35 * time.Millisecond},
+		// keyCount=14, accelRate=0.5: scaledKeyCount=7, step=2, interval=17ms
+		{"low accel step2", 14, "fast", 0.5, 17 * time.Millisecond},
 	}
 
 	for _, tt := range tests {
@@ -194,9 +210,8 @@ func TestIsRunningInitialState(t *testing.T) {
 }
 
 func TestGetRepeatIntervalEdgeCases(t *testing.T) {
-	// Test with AccelRate of 0 (should avoid division by zero)
-	// The function divides by (step * accelRate), so if accelRate is 0
-	// this could cause issues
+	// Test with AccelRate of 0 (should work now since AccelRate only scales keyCount)
+	// scaledKeyCount = keyCount * 0 = 0, step = 1, interval = 35ms
 	cfg := Config{
 		Enabled:   true,
 		MaxSpeed:  "fast",
@@ -204,16 +219,17 @@ func TestGetRepeatIntervalEdgeCases(t *testing.T) {
 		AccelRate: 0.0,
 	}
 
-	// This might panic or return infinity - we want to ensure it doesn't crash
-	defer func() {
-		if r := recover(); r != nil {
-			t.Logf("Recovered from panic with AccelRate=0: %v", r)
-		}
-	}()
-
-	// With AccelRate = 0, interval becomes Inf which converts to a very large duration
 	result := getRepeatInterval(0, cfg)
-	t.Logf("getRepeatInterval with AccelRate=0 returned: %v", result)
+	expected := 35 * time.Millisecond
+	if result != expected {
+		t.Errorf("getRepeatInterval with AccelRate=0: got %v, want %v", result, expected)
+	}
+
+	// Test with high keyCount but AccelRate=0 (should stay at step 1)
+	result2 := getRepeatInterval(100, cfg)
+	if result2 != expected {
+		t.Errorf("getRepeatInterval(100) with AccelRate=0: got %v, want %v (should stay at step 1)", result2, expected)
+	}
 }
 
 func TestBaseRepeatInterval(t *testing.T) {
