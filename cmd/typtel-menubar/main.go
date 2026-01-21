@@ -178,6 +178,11 @@ var (
 	mAvgWeekWords        *systray.MenuItem
 	mAvgWeekClicks       *systray.MenuItem
 	mAvgWeekDistance     *systray.MenuItem
+	// Daily averages (per day)
+	mAvgDailyKeystrokes *systray.MenuItem
+	mAvgDailyWords      *systray.MenuItem
+	mAvgDailyClicks     *systray.MenuItem
+	mAvgDailyDistance   *systray.MenuItem
 	// Odometer submenu items
 	mOdometer        *systray.MenuItem
 	mOdometerStatus  *systray.MenuItem
@@ -419,6 +424,22 @@ func buildMenu() {
 	mAvgWeekClicks.Disable()
 	mAvgWeekDistance = mAverages.AddSubMenuItem("   -- distance/hr", "")
 	mAvgWeekDistance.Disable()
+
+	// Separator in submenu
+	mAverages.AddSubMenuItem("", "").Disable()
+
+	// Daily averages header
+	mDailyAvgHeader := mAverages.AddSubMenuItem("Daily Averages (per day):", "")
+	mDailyAvgHeader.Disable()
+
+	mAvgDailyKeystrokes = mAverages.AddSubMenuItem("   -- keystrokes/day", "")
+	mAvgDailyKeystrokes.Disable()
+	mAvgDailyWords = mAverages.AddSubMenuItem("   -- words/day", "")
+	mAvgDailyWords.Disable()
+	mAvgDailyClicks = mAverages.AddSubMenuItem("   -- clicks/day", "")
+	mAvgDailyClicks.Disable()
+	mAvgDailyDistance = mAverages.AddSubMenuItem("   -- distance/day", "")
+	mAvgDailyDistance.Disable()
 
 	// Odometer submenu
 	mOdometer = systray.AddMenuItem("⏱️ Odometer", "Track session metrics")
@@ -967,6 +988,30 @@ func updateStatsDisplay() {
 	mAvgWeekWords.SetTitle(fmt.Sprintf("   %.0f words/hr", avgWordsWeek))
 	mAvgWeekClicks.SetTitle(fmt.Sprintf("   %.0f clicks/hr", avgClicksWeek))
 	mAvgWeekDistance.SetTitle(fmt.Sprintf("   %s/hr", formatDistance(avgDistanceWeek)))
+
+	// Calculate daily averages (per day over the week)
+	// Count active days (days with any keystroke or mouse activity)
+	activeDays := 0
+	for i := 0; i < 7; i++ {
+		date := now.AddDate(0, 0, -i).Format("2006-01-02")
+		hours := calculateActiveHours(date)
+		if hours > 0 {
+			activeDays++
+		}
+	}
+	if activeDays == 0 {
+		activeDays = 1
+	}
+
+	avgKeystrokesDaily := float64(weekKeystrokes) / float64(activeDays)
+	avgWordsDaily := float64(weekWords) / float64(activeDays)
+	avgClicksDaily := float64(weekClicks) / float64(activeDays)
+	avgDistanceDaily := weekMouseDistance / float64(activeDays)
+
+	mAvgDailyKeystrokes.SetTitle(fmt.Sprintf("   %s keystrokes/day", formatAbsolute(int64(avgKeystrokesDaily))))
+	mAvgDailyWords.SetTitle(fmt.Sprintf("   %s words/day", formatAbsolute(int64(avgWordsDaily))))
+	mAvgDailyClicks.SetTitle(fmt.Sprintf("   %s clicks/day", formatAbsolute(int64(avgClicksDaily))))
+	mAvgDailyDistance.SetTitle(fmt.Sprintf("   %s/day", formatDistance(avgDistanceDaily)))
 
 	// Update leaderboard
 	updateLeaderboard()
@@ -2220,7 +2265,6 @@ func generateChartsHTML() (string, error) {
             document.getElementById('totalMouse').textContent = formatDistance(d.totalMouseFeet, unit);
 
             // Update key types stats if visible
-            const keyTypesStats = document.getElementById('keyTypesStats');
             if (keyTypesStats && keyTypesStats.style.display !== 'none') {
                 document.getElementById('totalLetters').textContent = formatNumber(d.totalLetters);
                 document.getElementById('totalModifiers').textContent = formatNumber(d.totalModifiers);

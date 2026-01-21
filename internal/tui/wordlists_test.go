@@ -47,8 +47,8 @@ func TestWordListsHaveValidLength(t *testing.T) {
 	words := LoadEmbeddedWordLists()
 
 	for _, word := range words {
-		if len(word) < 2 {
-			t.Errorf("Word is too short (< 2 chars): %q", word)
+		if len(word) < 4 {
+			t.Errorf("Word is too short (< 4 chars): %q", word)
 		}
 	}
 }
@@ -67,8 +67,8 @@ func TestWordListContainsCommonWords(t *testing.T) {
 		wordSet[w] = true
 	}
 
-	// Check for some common English words that should be present
-	commonWords := []string{"the", "and", "is", "it", "to", "of", "in", "for", "on", "with"}
+	// Check for some common English words that should be present (min 4 chars)
+	commonWords := []string{"that", "with", "have", "this", "will", "your", "from", "they", "what", "about"}
 	for _, common := range commonWords {
 		if !wordSet[common] {
 			t.Errorf("Common word %q not found in word list", common)

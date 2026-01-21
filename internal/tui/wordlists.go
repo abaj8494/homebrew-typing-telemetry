@@ -18,10 +18,10 @@ var programmingWords string
 func LoadEmbeddedWordLists() []string {
 	var words []string
 
-	// Parse english common words
+	// Parse english common words (min 4 chars to avoid abbreviations like "vpn", "pf", "gg")
 	for _, line := range strings.Split(englishCommonWords, "\n") {
 		word := strings.TrimSpace(line)
-		if word != "" && len(word) >= 2 && len(word) <= 15 {
+		if word != "" && len(word) >= 4 && len(word) <= 15 {
 			words = append(words, word)
 		}
 	}
@@ -29,7 +29,7 @@ func LoadEmbeddedWordLists() []string {
 	// Parse EFF words (good quality, no offensive content)
 	for _, line := range strings.Split(effWords, "\n") {
 		word := strings.TrimSpace(line)
-		if word != "" && len(word) >= 2 {
+		if word != "" && len(word) >= 4 {
 			words = append(words, word)
 		}
 	}
@@ -37,7 +37,7 @@ func LoadEmbeddedWordLists() []string {
 	// Parse programming words
 	for _, line := range strings.Split(programmingWords, "\n") {
 		word := strings.TrimSpace(line)
-		if word != "" && len(word) >= 2 {
+		if word != "" && len(word) >= 4 {
 			words = append(words, word)
 		}
 	}
