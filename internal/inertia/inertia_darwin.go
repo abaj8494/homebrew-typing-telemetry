@@ -177,24 +177,19 @@ var maxSpeedCaps = map[string]int{
 	"slow":       50, // ~20 keys/sec
 }
 
-// Keys excluded from inertia acceleration (action keys that trigger system behavior)
-var excludedKeycodes = map[int]bool{
-	48: true, // Tab - triggers UI actions, shouldn't accelerate
-	53: true, // Escape - menu/cancel actions
-	36: true, // Return/Enter - submit actions
-	76: true, // Numpad Enter
-	51: true, // Delete/Backspace - already has system repeat
-	117: true, // Forward Delete
-}
+// Safety timeout: if we don't receive any events for this long while a key is "held",
+// assume the keyUp was missed (e.g., secure input fields block event taps)
+const safetyTimeoutMs = 500
 
 // State tracking
 type keyState struct {
-	isHeld        bool
-	keyCount      int
-	lastEventTime time.Time
-	repeatTimer   *time.Timer
-	stopChan      chan struct{}
-	lastStopTime  time.Time // When key was released - to prevent race condition restarts
+	isHeld           bool
+	keyCount         int
+	lastEventTime    time.Time
+	lastConfirmTime  time.Time // Last time we confirmed the key is still held (any event received)
+	repeatTimer      *time.Timer
+	stopChan         chan struct{}
+	lastStopTime     time.Time // When key was released - to prevent race condition restarts
 }
 
 var (
@@ -361,6 +356,7 @@ func startKeyRepeat(keycode int) {
 	state.isHeld = true
 	state.keyCount = 0
 	state.lastEventTime = time.Now()
+	state.lastConfirmTime = time.Now()
 	state.stopChan = make(chan struct{})
 	cfg := config
 	mu.Unlock()
@@ -388,6 +384,17 @@ func startKeyRepeat(keycode int) {
 					kc, ok, ok && s.isHeld, config.Enabled)
 				return
 			}
+
+			// Safety timeout: if we haven't received any events for too long,
+			// the keyUp was probably missed (e.g., secure input fields block event taps)
+			timeSinceConfirm := time.Since(s.lastConfirmTime)
+			if timeSinceConfirm > time.Duration(safetyTimeoutMs)*time.Millisecond {
+				mu.RUnlock()
+				debugLog("SAFETY_TIMEOUT keycode=%d timeSinceConfirm=%v (keyUp likely missed)", kc, timeSinceConfirm)
+				stopKeyRepeat(kc)
+				return
+			}
+
 			s.keyCount++
 			keyCount := s.keyCount
 			interval := getRepeatInterval(keyCount, cfg)
@@ -468,6 +475,17 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 
 	keycode := int(C.getKeycode(event))
 
+	// Update confirm time for all held keys - this proves events are still flowing
+	// (critical for detecting when secure input fields block our keyUp events)
+	mu.Lock()
+	now := time.Now()
+	for _, state := range keyStates {
+		if state.isHeld {
+			state.lastConfirmTime = now
+		}
+	}
+	mu.Unlock()
+
 	switch eventType {
 	case C.kCGEventKeyDown:
 		isAutorepeat := C.isAutorepeatEvent(event) != false
@@ -497,18 +515,12 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 			debugLog("IGNORE_LATE_SYNTHETIC keycode=%d (released %v ago)", keycode, time.Since(state.lastStopTime))
 			return C.nullEventRef()
 		} else {
-			// Check if this key is excluded from inertia (action keys like Tab, Escape, Enter)
-			if excludedKeycodes[keycode] {
-				debugLog("EXCLUDED_KEY keycode=%d (action key, no inertia)", keycode)
-				// Let the event through without inertia acceleration
-			} else {
-				// Initial key press - stop inertia on all other held keys first
-				// This prevents the "swarm of characters" issue when switching keys
-				stopOtherKeys(keycode)
-				// Then start our accelerating repeat for this key
-				debugLog("START_TRACKING keycode=%d", keycode)
-				startKeyRepeat(keycode)
-			}
+			// Initial key press - stop inertia on all other held keys first
+			// This prevents the "swarm of characters" issue when switching keys
+			stopOtherKeys(keycode)
+			// Then start our accelerating repeat for this key
+			debugLog("START_TRACKING keycode=%d", keycode)
+			startKeyRepeat(keycode)
 		}
 
 	case C.kCGEventKeyUp:
