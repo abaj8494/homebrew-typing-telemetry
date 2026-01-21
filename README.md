@@ -103,6 +103,16 @@ make test
 
 ### Test Coverage
 
+| Package | Coverage |
+|---------|----------|
+| pkg/stats | 100% |
+| internal/storage | 78.6% |
+| internal/tui | 67.5% |
+| internal/mousetracker | 21.2% |
+| internal/inertia | 11.9% |
+| cmd/typtel-menubar | 7.6% |
+| cmd/typtel | 6.5% |
+
 Generate an HTML coverage report:
 
 ```sh
@@ -110,12 +120,6 @@ make test-coverage
 ```
 
 This creates `coverage.html` with a detailed breakdown by package and function.
-
-View coverage percentage:
-
-```sh
-go test -cover ./...
-```
 
 ## Updating
 
