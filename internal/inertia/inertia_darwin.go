@@ -376,14 +376,48 @@ func startKeyRepeat(keycode int) {
 			debugLog("REPEAT_DELAY_DONE keycode=%d, starting acceleration", kc)
 		}
 
-		// Reset lastConfirmTime now that acceleration is starting
-		// This ensures safety timeout is measured from acceleration start, not key press
+		// Phase 1: Post first synthetic event and verify event tap is working
+		// This detects secure input fields that block our events
 		mu.Lock()
 		if s, ok := keyStates[kc]; ok && s.isHeld {
 			s.lastConfirmTime = time.Now()
+			s.keyCount = 1
 		}
 		mu.Unlock()
 
+		debugLog("REPEAT_POST keycode=%d count=1 interval=0 (first event)", kc)
+		C.postKeyEvent(C.CGKeyCode(kc), C.bool(true))
+		firstPostTime := time.Now()
+
+		// Wait for confirmation that our event came back through the event tap
+		// In secure input fields, we won't receive it back
+		const firstEventTimeout = 50 * time.Millisecond
+		confirmWait := time.NewTimer(firstEventTimeout)
+		select {
+		case <-stopCh:
+			confirmWait.Stop()
+			debugLog("REPEAT_STOPPED_SIGNAL keycode=%d (during first event wait)", kc)
+			return
+		case <-confirmWait.C:
+			// Check if we received confirmation
+			mu.RLock()
+			s, ok := keyStates[kc]
+			if !ok || !s.isHeld {
+				mu.RUnlock()
+				return
+			}
+			// If lastConfirmTime hasn't been updated since we posted, we're in secure input
+			if !s.lastConfirmTime.After(firstPostTime) {
+				mu.RUnlock()
+				debugLog("SECURE_INPUT_DETECTED keycode=%d (first event not confirmed after %v)", kc, firstEventTimeout)
+				stopKeyRepeat(kc)
+				return
+			}
+			mu.RUnlock()
+			debugLog("FIRST_EVENT_CONFIRMED keycode=%d, continuing acceleration", kc)
+		}
+
+		// Phase 2: Normal acceleration loop
 		for {
 			mu.RLock()
 			s, ok := keyStates[kc]
