@@ -5,7 +5,7 @@ package keylogger
 
 /*
 #cgo CFLAGS: -x objective-c
-#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework ApplicationServices
+#cgo LDFLAGS: -framework CoreGraphics -framework CoreFoundation -framework ApplicationServices -framework AudioToolbox
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
@@ -62,6 +62,17 @@ static int checkAccessibilityPermissions() {
     return AXIsProcessTrusted();
 }
 
+// Get current modifier flags from the system (not tracked state)
+static uint64_t getCurrentModifierFlags() {
+    return (uint64_t)CGEventSourceFlagsState(kCGEventSourceStateCombinedSessionState);
+}
+
+// Play a system sound (uses AudioServices)
+#include <AudioToolbox/AudioToolbox.h>
+static void playSystemSound(int soundID) {
+    AudioServicesPlaySystemSound((SystemSoundID)soundID);
+}
+
 static void runEventLoop(CFMachPortRef eventTap) {
     CFRunLoopSourceRef runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0);
     CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, kCFRunLoopCommonModes);
@@ -116,6 +127,43 @@ func goModifierCallback(keycode C.int) {
 // CheckAccessibilityPermissions returns true if the app has accessibility permissions
 func CheckAccessibilityPermissions() bool {
 	return C.checkAccessibilityPermissions() != 0
+}
+
+// ModifierFlags represents the current state of modifier keys
+type ModifierFlags struct {
+	Cmd   bool
+	Ctrl  bool
+	Opt   bool
+	Shift bool
+}
+
+// GetCurrentModifiers returns the current modifier key state from the system
+// This queries the actual hardware state, not tracked state
+func GetCurrentModifiers() ModifierFlags {
+	flags := uint64(C.getCurrentModifierFlags())
+	return ModifierFlags{
+		Cmd:   flags&(1<<20) != 0, // kCGEventFlagMaskCommand
+		Ctrl:  flags&(1<<18) != 0, // kCGEventFlagMaskControl
+		Opt:   flags&(1<<19) != 0, // kCGEventFlagMaskAlternate
+		Shift: flags&(1<<17) != 0, // kCGEventFlagMaskShift
+	}
+}
+
+// System sound IDs for macOS
+const (
+	SoundTink     = 1103 // Short tink sound
+	SoundPop      = 1104 // Pop sound
+	SoundBoop     = 1105 // Boop sound
+	SoundGlass    = 1107 // Glass sound (good for activation)
+	SoundMorse    = 1108 // Morse code sound
+	SoundPurr     = 1110 // Purr sound (good for deactivation)
+	SoundHero     = 1114 // Hero sound
+	SoundSubmerge = 1117 // Submerge sound
+)
+
+// PlaySound plays a system sound by ID
+func PlaySound(soundID int) {
+	C.playSystemSound(C.int(soundID))
 }
 
 // Start begins capturing keystrokes and returns a channel that receives keycodes

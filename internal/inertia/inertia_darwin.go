@@ -179,17 +179,18 @@ var maxSpeedCaps = map[string]int{
 
 // Safety timeout: if we don't receive any events for this long while a key is "held",
 // assume the keyUp was missed (e.g., secure input fields block event taps)
-const safetyTimeoutMs = 500
+// Keep this short to minimize spam in problematic contexts
+const safetyTimeoutMs = 100
 
 // State tracking
 type keyState struct {
-	isHeld           bool
-	keyCount         int
-	lastEventTime    time.Time
-	lastConfirmTime  time.Time // Last time we confirmed the key is still held (any event received)
-	repeatTimer      *time.Timer
-	stopChan         chan struct{}
-	lastStopTime     time.Time // When key was released - to prevent race condition restarts
+	isHeld          bool
+	keyCount        int
+	lastEventTime   time.Time
+	lastConfirmTime time.Time // Last time we confirmed the key is still held (any event received)
+	repeatTimer     *time.Timer
+	stopChan        chan struct{}
+	lastStopTime    time.Time // When key was released - to prevent race condition restarts
 }
 
 var (
@@ -475,17 +476,6 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 
 	keycode := int(C.getKeycode(event))
 
-	// Update confirm time for all held keys - this proves events are still flowing
-	// (critical for detecting when secure input fields block our keyUp events)
-	mu.Lock()
-	now := time.Now()
-	for _, state := range keyStates {
-		if state.isHeld {
-			state.lastConfirmTime = now
-		}
-	}
-	mu.Unlock()
-
 	switch eventType {
 	case C.kCGEventKeyDown:
 		isAutorepeat := C.isAutorepeatEvent(event) != false
@@ -497,6 +487,20 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 		// Check if key was recently released (within 50ms) - likely a synthetic event in-flight
 		recentlyReleased := exists && !state.isHeld && time.Since(state.lastStopTime) < 50*time.Millisecond
 		mu.RUnlock()
+
+		// Update confirm time for OTHER held keys (not this one) - proves events are flowing
+		// We don't update for THIS key because if alreadyHeld, this could be our synthetic event
+		// which would defeat the safety timeout
+		if !alreadyHeld {
+			mu.Lock()
+			now := time.Now()
+			for kc, s := range keyStates {
+				if s.isHeld && kc != keycode {
+					s.lastConfirmTime = now
+				}
+			}
+			mu.Unlock()
+		}
 
 		debugLog("EVENT_KEYDOWN keycode=%d autorepeat=%v alreadyHeld=%v recentlyReleased=%v", keycode, isAutorepeat, alreadyHeld, recentlyReleased)
 

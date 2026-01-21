@@ -1000,19 +1000,19 @@ func TestMixedKeyTypeCounting(t *testing.T) {
 	// Simulate typing "Hello World" with shift:
 	// Shift, H, e, l, l, o, Space, Shift, W, o, r, l, d
 	keycodes := []int{
-		56,  // Left Shift (modifier)
-		4,   // H (letter)
-		14,  // e (letter)
-		37,  // l (letter)
-		37,  // l (letter)
-		31,  // o (letter)
-		49,  // Space (special)
-		56,  // Left Shift (modifier)
-		13,  // W (letter)
-		31,  // o (letter)
-		15,  // r (letter)
-		37,  // l (letter)
-		2,   // d (letter)
+		56, // Left Shift (modifier)
+		4,  // H (letter)
+		14, // e (letter)
+		37, // l (letter)
+		37, // l (letter)
+		31, // o (letter)
+		49, // Space (special)
+		56, // Left Shift (modifier)
+		13, // W (letter)
+		31, // o (letter)
+		15, // r (letter)
+		37, // l (letter)
+		2,  // d (letter)
 	}
 
 	for _, keycode := range keycodes {
@@ -1055,8 +1055,8 @@ func TestKeyTypeTotalsMatchKeystrokeTotal(t *testing.T) {
 
 	// Record a variety of keystrokes
 	keycodesAndTypes := []struct {
-		keycode  int
-		keyType  string
+		keycode int
+		keyType string
 	}{
 		{0, "letter"},    // A
 		{1, "letter"},    // S

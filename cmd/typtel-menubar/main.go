@@ -121,14 +121,6 @@ var (
 	store          *storage.Store
 	lastMenuTitle  string
 	menuTitleMutex sync.Mutex
-	// Modifier key state tracking for odometer hotkey
-	modifierState struct {
-		cmd   bool
-		ctrl  bool
-		opt   bool
-		shift bool
-	}
-	modifierMutex sync.Mutex
 )
 
 // Version is set at build time via ldflags: -X main.Version=$(VERSION)
@@ -169,27 +161,27 @@ var (
 	mLeaderboardHeader  *systray.MenuItem
 	leaderboardSubmenus *systray.MenuItem
 	// Averages submenu items
-	mAverages            *systray.MenuItem
-	mAvgTodayKeystrokes  *systray.MenuItem
-	mAvgTodayWords       *systray.MenuItem
-	mAvgTodayClicks      *systray.MenuItem
-	mAvgTodayDistance    *systray.MenuItem
-	mAvgWeekKeystrokes   *systray.MenuItem
-	mAvgWeekWords        *systray.MenuItem
-	mAvgWeekClicks       *systray.MenuItem
-	mAvgWeekDistance     *systray.MenuItem
+	mAverages           *systray.MenuItem
+	mAvgTodayKeystrokes *systray.MenuItem
+	mAvgTodayWords      *systray.MenuItem
+	mAvgTodayClicks     *systray.MenuItem
+	mAvgTodayDistance   *systray.MenuItem
+	mAvgWeekKeystrokes  *systray.MenuItem
+	mAvgWeekWords       *systray.MenuItem
+	mAvgWeekClicks      *systray.MenuItem
+	mAvgWeekDistance    *systray.MenuItem
 	// Daily averages (per day)
 	mAvgDailyKeystrokes *systray.MenuItem
 	mAvgDailyWords      *systray.MenuItem
 	mAvgDailyClicks     *systray.MenuItem
 	mAvgDailyDistance   *systray.MenuItem
 	// Odometer submenu items
-	mOdometer        *systray.MenuItem
-	mOdometerStatus  *systray.MenuItem
-	mOdometerToggle  *systray.MenuItem
+	mOdometer             *systray.MenuItem
+	mOdometerStatus       *systray.MenuItem
+	mOdometerToggle       *systray.MenuItem
 	mOdometerReset        *systray.MenuItem
 	mOdometerClearHistory *systray.MenuItem
-	mOdometerHotkey  *systray.MenuItem
+	mOdometerHotkey       *systray.MenuItem
 	// Odometer hotkey settings submenu items
 	mHotkeyCmdCtrlO   *systray.MenuItem
 	mHotkeyCmdShiftO  *systray.MenuItem
@@ -247,22 +239,11 @@ func main() {
 	// Process keystrokes in background
 	go func() {
 		for keycode := range keystrokeChan {
-			// Check for odometer hotkey BEFORE updating modifier state
-			// (updateModifierState resets modifiers on non-modifier keys)
+			// Check for odometer hotkey (uses system modifier state, not tracked)
 			if checkOdometerHotkey(keycode) {
-				// Reset modifier state after hotkey triggered
-				modifierMutex.Lock()
-				modifierState.cmd = false
-				modifierState.ctrl = false
-				modifierState.opt = false
-				modifierState.shift = false
-				modifierMutex.Unlock()
 				toggleOdometer()
 				continue // Don't count hotkey as regular keystroke
 			}
-
-			// Track modifier key state
-			updateModifierState(keycode)
 
 			if err := store.RecordKeystroke(keycode); err != nil {
 				log.Printf("Failed to record keystroke: %v", err)
@@ -1245,9 +1226,11 @@ func toggleOdometer() {
 	session, _ := store.GetOdometerSession()
 	if session != nil && session.IsActive {
 		store.StopOdometer()
+		keylogger.PlaySound(keylogger.SoundPurr) // Deactivation sound
 		log.Println("Odometer stopped")
 	} else {
 		store.StartOdometer()
+		keylogger.PlaySound(keylogger.SoundGlass) // Activation sound
 		log.Println("Odometer started")
 	}
 	updateOdometerDisplay()
@@ -1310,30 +1293,6 @@ func updateHotkeyChecks(selected string) {
 	}
 }
 
-// updateModifierState tracks the state of modifier keys based on keycode
-func updateModifierState(keycode int) {
-	modifierMutex.Lock()
-	defer modifierMutex.Unlock()
-
-	switch keycode {
-	case 55, 54: // Left/Right Command
-		modifierState.cmd = true
-	case 59, 62: // Left/Right Control
-		modifierState.ctrl = true
-	case 58, 61: // Left/Right Option
-		modifierState.opt = true
-	case 56, 60: // Left/Right Shift
-		modifierState.shift = true
-	default:
-		// Reset modifier state after non-modifier key press
-		// (modifiers are typically released before the next key event)
-		modifierState.cmd = false
-		modifierState.ctrl = false
-		modifierState.opt = false
-		modifierState.shift = false
-	}
-}
-
 // checkOdometerHotkey checks if the current keycode + modifiers match the odometer hotkey
 func checkOdometerHotkey(keycode int) bool {
 	// Only trigger on 'O' key (keycode 31)
@@ -1341,22 +1300,21 @@ func checkOdometerHotkey(keycode int) bool {
 		return false
 	}
 
-	modifierMutex.Lock()
-	defer modifierMutex.Unlock()
-
+	// Query actual system modifier state (not our tracked state which can be unreliable)
+	mods := keylogger.GetCurrentModifiers()
 	hotkey := store.GetOdometerHotkey()
 
 	switch hotkey {
 	case "cmd+ctrl+o":
-		return modifierState.cmd && modifierState.ctrl && !modifierState.opt && !modifierState.shift
+		return mods.Cmd && mods.Ctrl && !mods.Opt && !mods.Shift
 	case "cmd+shift+o":
-		return modifierState.cmd && modifierState.shift && !modifierState.ctrl && !modifierState.opt
+		return mods.Cmd && mods.Shift && !mods.Ctrl && !mods.Opt
 	case "cmd+opt+o":
-		return modifierState.cmd && modifierState.opt && !modifierState.ctrl && !modifierState.shift
+		return mods.Cmd && mods.Opt && !mods.Ctrl && !mods.Shift
 	case "ctrl+shift+o":
-		return modifierState.ctrl && modifierState.shift && !modifierState.cmd && !modifierState.opt
+		return mods.Ctrl && mods.Shift && !mods.Cmd && !mods.Opt
 	default:
-		return modifierState.cmd && modifierState.ctrl && !modifierState.opt && !modifierState.shift
+		return mods.Cmd && mods.Ctrl && !mods.Opt && !mods.Shift
 	}
 }
 
@@ -1604,20 +1562,20 @@ func generateChartsHTML() (string, error) {
 	showKeyTypes := store.IsShowKeyTypesEnabled()
 
 	type chartData struct {
-		labels            []string
-		keystrokeData     []string
-		wordData          []string
-		mouseDataFeet     []float64
-		letterData        []string
-		modifierData      []string
-		specialData       []string
-		totalKeystrokes   int64
-		totalWords        int64
-		totalMouseDist    float64
-		totalLetters      int64
-		totalModifiers    int64
-		totalSpecial      int64
-		heatmapHTML       string
+		labels          []string
+		keystrokeData   []string
+		wordData        []string
+		mouseDataFeet   []float64
+		letterData      []string
+		modifierData    []string
+		specialData     []string
+		totalKeystrokes int64
+		totalWords      int64
+		totalMouseDist  float64
+		totalLetters    int64
+		totalModifiers  int64
+		totalSpecial    int64
+		heatmapHTML     string
 	}
 
 	prepareChartData := func(days int) (*chartData, error) {
@@ -2461,8 +2419,8 @@ func generateChartsHTML() (string, error) {
     </script>
 </body>
 </html>`,
-		keyTypesDisplay,       // %[1]s - key types stats and charts display
-		generateHourLabels(),  // %[2]s - hour labels
+		keyTypesDisplay,      // %[1]s - key types stats and charts display
+		generateHourLabels(), // %[2]s - hour labels
 		strings.Join(weeklyData.labels, ","),
 		strings.Join(weeklyData.keystrokeData, ","),
 		strings.Join(weeklyData.wordData, ","),
