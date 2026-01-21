@@ -507,7 +507,13 @@ func goInertiaEventCallback(proxy C.CGEventTapProxy, eventType C.CGEventType, ev
 		if isAutorepeat {
 			// Suppress macOS autorepeat - we generate our own
 			if alreadyHeld {
-				debugLog("SUPPRESS_AUTOREPEAT keycode=%d", keycode)
+				// Update lastConfirmTime - this autorepeat proves the key is still held
+				mu.Lock()
+				if s, ok := keyStates[keycode]; ok && s.isHeld {
+					s.lastConfirmTime = time.Now()
+				}
+				mu.Unlock()
+				debugLog("SUPPRESS_AUTOREPEAT keycode=%d (confirmed still held)", keycode)
 				return C.nullEventRef()
 			}
 			debugLog("PASSTHROUGH keycode=%d (autorepeat but not tracked)", keycode)
