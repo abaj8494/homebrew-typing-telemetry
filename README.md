@@ -90,6 +90,30 @@ All data is stored locally in `~/.local/share/typtel/`:
 
 No data is sent externally.
 
+## Testing
+
+Run the test suite:
+
+```sh
+make test
+```
+
+### Test Coverage
+
+Generate an HTML coverage report:
+
+```sh
+make test-coverage
+```
+
+This creates `coverage.html` with a detailed breakdown by package and function.
+
+View coverage percentage:
+
+```sh
+go test -cover ./...
+```
+
 ## Updating
 
 ```sh

@@ -124,6 +124,21 @@ func initSchema(db *sql.DB) error {
 		key TEXT PRIMARY KEY,
 		value TEXT
 	);
+
+	CREATE TABLE IF NOT EXISTS odometer_session (
+		id INTEGER PRIMARY KEY,
+		is_active INTEGER DEFAULT 0,
+		start_time DATETIME,
+		start_keystrokes INTEGER DEFAULT 0,
+		start_words INTEGER DEFAULT 0,
+		start_clicks INTEGER DEFAULT 0,
+		start_distance REAL DEFAULT 0,
+		current_keystrokes INTEGER DEFAULT 0,
+		current_words INTEGER DEFAULT 0,
+		current_clicks INTEGER DEFAULT 0,
+		current_distance REAL DEFAULT 0,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+	);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -137,6 +152,9 @@ func initSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN letters INTEGER DEFAULT 0")
 	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN modifiers INTEGER DEFAULT 0")
 	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN special INTEGER DEFAULT 0")
+
+	// Ensure odometer session row exists (singleton pattern)
+	_, _ = db.Exec("INSERT OR IGNORE INTO odometer_session (id, is_active) VALUES (1, 0)")
 
 	return nil
 }
@@ -532,6 +550,8 @@ const (
 	SettingTypingTestCustomTexts = "typing_test_custom_texts"
 	// Key type tracking settings
 	SettingShowKeyTypes = "show_key_types"
+	// Odometer settings
+	SettingOdometerHotkey = "odometer_hotkey"
 )
 
 // Distance unit options
@@ -902,4 +922,140 @@ func (s *Store) GetTypingTestCustomTexts() string {
 // SetTypingTestCustomTexts saves custom texts (newline-separated)
 func (s *Store) SetTypingTestCustomTexts(texts string) error {
 	return s.SetSetting(SettingTypingTestCustomTexts, texts)
+}
+
+// OdometerSession represents the current odometer session state
+type OdometerSession struct {
+	IsActive          bool
+	StartTime         time.Time
+	StartKeystrokes   int64
+	StartWords        int64
+	StartClicks       int64
+	StartDistance     float64
+	CurrentKeystrokes int64
+	CurrentWords      int64
+	CurrentClicks     int64
+	CurrentDistance   float64
+}
+
+// GetOdometerSession retrieves the current odometer session state
+func (s *Store) GetOdometerSession() (*OdometerSession, error) {
+	var session OdometerSession
+	var isActive int
+	var startTimeStr string
+
+	err := s.db.QueryRow(`
+		SELECT COALESCE(is_active, 0), COALESCE(start_time, ''),
+		       COALESCE(start_keystrokes, 0), COALESCE(start_words, 0),
+		       COALESCE(start_clicks, 0), COALESCE(start_distance, 0),
+		       COALESCE(current_keystrokes, 0), COALESCE(current_words, 0),
+		       COALESCE(current_clicks, 0), COALESCE(current_distance, 0)
+		FROM odometer_session WHERE id = 1
+	`).Scan(&isActive, &startTimeStr, &session.StartKeystrokes, &session.StartWords,
+		&session.StartClicks, &session.StartDistance, &session.CurrentKeystrokes,
+		&session.CurrentWords, &session.CurrentClicks, &session.CurrentDistance)
+
+	if err != nil {
+		return &OdometerSession{}, nil
+	}
+
+	session.IsActive = isActive == 1
+	if startTimeStr != "" {
+		session.StartTime, _ = time.Parse(time.RFC3339, startTimeStr)
+	}
+	return &session, nil
+}
+
+// StartOdometer starts a new odometer session with current totals as baseline
+func (s *Store) StartOdometer() error {
+	// Get current totals to set as baseline
+	todayStats, _ := s.GetTodayStats()
+	mouseStats, _ := s.GetTodayMouseStats()
+
+	keystrokeBaseline := int64(0)
+	wordBaseline := int64(0)
+	clickBaseline := int64(0)
+	distanceBaseline := float64(0)
+
+	if todayStats != nil {
+		keystrokeBaseline = todayStats.Keystrokes
+		wordBaseline = todayStats.Words
+	}
+	if mouseStats != nil {
+		clickBaseline = mouseStats.ClickCount
+		distanceBaseline = mouseStats.TotalDistance
+	}
+
+	_, err := s.db.Exec(`
+		UPDATE odometer_session SET
+			is_active = 1,
+			start_time = ?,
+			start_keystrokes = ?,
+			start_words = ?,
+			start_clicks = ?,
+			start_distance = ?,
+			current_keystrokes = ?,
+			current_words = ?,
+			current_clicks = ?,
+			current_distance = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = 1
+	`, time.Now().Format(time.RFC3339),
+		keystrokeBaseline, wordBaseline, clickBaseline, distanceBaseline,
+		keystrokeBaseline, wordBaseline, clickBaseline, distanceBaseline)
+	return err
+}
+
+// StopOdometer stops the current odometer session
+func (s *Store) StopOdometer() error {
+	_, err := s.db.Exec(`UPDATE odometer_session SET is_active = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1`)
+	return err
+}
+
+// UpdateOdometerCurrent updates the current values of the odometer session
+func (s *Store) UpdateOdometerCurrent(keystrokes, words, clicks int64, distance float64) error {
+	_, err := s.db.Exec(`
+		UPDATE odometer_session SET
+			current_keystrokes = ?,
+			current_words = ?,
+			current_clicks = ?,
+			current_distance = ?,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = 1 AND is_active = 1
+	`, keystrokes, words, clicks, distance)
+	return err
+}
+
+// ResetOdometer resets the odometer to inactive state with zero values
+func (s *Store) ResetOdometer() error {
+	_, err := s.db.Exec(`
+		UPDATE odometer_session SET
+			is_active = 0,
+			start_time = NULL,
+			start_keystrokes = 0,
+			start_words = 0,
+			start_clicks = 0,
+			start_distance = 0,
+			current_keystrokes = 0,
+			current_words = 0,
+			current_clicks = 0,
+			current_distance = 0,
+			updated_at = CURRENT_TIMESTAMP
+		WHERE id = 1
+	`)
+	return err
+}
+
+// GetOdometerHotkey returns the configured odometer hotkey (default: "cmd+ctrl+o")
+func (s *Store) GetOdometerHotkey() string {
+	val, _ := s.GetSetting(SettingOdometerHotkey)
+	if val == "" {
+		return "cmd+ctrl+o"
+	}
+	return val
+}
+
+// SetOdometerHotkey sets the odometer hotkey
+func (s *Store) SetOdometerHotkey(hotkey string) error {
+	return s.SetSetting(SettingOdometerHotkey, hotkey)
 }

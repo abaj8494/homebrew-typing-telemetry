@@ -121,6 +121,14 @@ var (
 	store          *storage.Store
 	lastMenuTitle  string
 	menuTitleMutex sync.Mutex
+	// Modifier key state tracking for odometer hotkey
+	modifierState struct {
+		cmd   bool
+		ctrl  bool
+		opt   bool
+		shift bool
+	}
+	modifierMutex sync.Mutex
 )
 
 // Version is set at build time via ldflags: -X main.Version=$(VERSION)
@@ -160,6 +168,27 @@ var (
 	leaderboardItems    []*systray.MenuItem
 	mLeaderboardHeader  *systray.MenuItem
 	leaderboardSubmenus *systray.MenuItem
+	// Averages submenu items
+	mAverages            *systray.MenuItem
+	mAvgTodayKeystrokes  *systray.MenuItem
+	mAvgTodayWords       *systray.MenuItem
+	mAvgTodayClicks      *systray.MenuItem
+	mAvgTodayDistance    *systray.MenuItem
+	mAvgWeekKeystrokes   *systray.MenuItem
+	mAvgWeekWords        *systray.MenuItem
+	mAvgWeekClicks       *systray.MenuItem
+	mAvgWeekDistance     *systray.MenuItem
+	// Odometer submenu items
+	mOdometer        *systray.MenuItem
+	mOdometerStatus  *systray.MenuItem
+	mOdometerToggle  *systray.MenuItem
+	mOdometerReset   *systray.MenuItem
+	mOdometerHotkey  *systray.MenuItem
+	// Odometer hotkey settings submenu items
+	mHotkeyCmdCtrlO   *systray.MenuItem
+	mHotkeyCmdShiftO  *systray.MenuItem
+	mHotkeyCmdOptO    *systray.MenuItem
+	mHotkeyCtrlShiftO *systray.MenuItem
 )
 
 func init() {
@@ -212,6 +241,15 @@ func main() {
 	// Process keystrokes in background
 	go func() {
 		for keycode := range keystrokeChan {
+			// Track modifier key state
+			updateModifierState(keycode)
+
+			// Check for odometer hotkey
+			if checkOdometerHotkey(keycode) {
+				toggleOdometer()
+				continue // Don't count hotkey as regular keystroke
+			}
+
 			if err := store.RecordKeystroke(keycode); err != nil {
 				log.Printf("Failed to record keystroke: %v", err)
 			}
@@ -221,6 +259,9 @@ func main() {
 					log.Printf("Failed to increment word count: %v", err)
 				}
 			}
+
+			// Update odometer if active
+			updateOdometerIfActive()
 		}
 	}()
 
@@ -344,6 +385,73 @@ func buildMenu() {
 	mWeekKeystrokes.Disable()
 	mWeekMouse = systray.AddMenuItem("This Week: 🖱️ -- clicks, -- distance", "")
 	mWeekMouse.Disable()
+
+	systray.AddSeparator()
+
+	// Averages submenu
+	mAverages = systray.AddMenuItem("📊 Averages", "Hourly averages for today and this week")
+
+	// Today's averages header
+	mTodayAvgHeader := mAverages.AddSubMenuItem("Today's Averages:", "")
+	mTodayAvgHeader.Disable()
+
+	mAvgTodayKeystrokes = mAverages.AddSubMenuItem("   -- keystrokes/hr", "")
+	mAvgTodayKeystrokes.Disable()
+	mAvgTodayWords = mAverages.AddSubMenuItem("   -- words/hr", "")
+	mAvgTodayWords.Disable()
+	mAvgTodayClicks = mAverages.AddSubMenuItem("   -- clicks/hr", "")
+	mAvgTodayClicks.Disable()
+	mAvgTodayDistance = mAverages.AddSubMenuItem("   -- distance/hr", "")
+	mAvgTodayDistance.Disable()
+
+	// Separator in submenu
+	mAverages.AddSubMenuItem("", "").Disable()
+
+	// Week's averages header
+	mWeekAvgHeader := mAverages.AddSubMenuItem("This Week's Averages:", "")
+	mWeekAvgHeader.Disable()
+
+	mAvgWeekKeystrokes = mAverages.AddSubMenuItem("   -- keystrokes/hr", "")
+	mAvgWeekKeystrokes.Disable()
+	mAvgWeekWords = mAverages.AddSubMenuItem("   -- words/hr", "")
+	mAvgWeekWords.Disable()
+	mAvgWeekClicks = mAverages.AddSubMenuItem("   -- clicks/hr", "")
+	mAvgWeekClicks.Disable()
+	mAvgWeekDistance = mAverages.AddSubMenuItem("   -- distance/hr", "")
+	mAvgWeekDistance.Disable()
+
+	// Odometer submenu
+	mOdometer = systray.AddMenuItem("⏱️ Odometer", "Track session metrics")
+
+	// Get current odometer state
+	odometerSession, _ := store.GetOdometerSession()
+	odometerStatusText := "Inactive"
+	toggleText := "Start Odometer"
+	if odometerSession != nil && odometerSession.IsActive {
+		odometerStatusText = "Active"
+		toggleText = "Stop Odometer"
+	}
+
+	mOdometerStatus = mOdometer.AddSubMenuItem(fmt.Sprintf("Status: %s", odometerStatusText), "")
+	mOdometerStatus.Disable()
+
+	currentHotkey := store.GetOdometerHotkey()
+	hotkeyDisplay := formatHotkeyDisplay(currentHotkey)
+	mOdometerToggle = mOdometer.AddSubMenuItem(fmt.Sprintf("%s (%s)", toggleText, hotkeyDisplay), "")
+
+	mOdometerReset = mOdometer.AddSubMenuItem("Reset Odometer", "")
+
+	mOdometer.AddSubMenuItem("", "").Disable() // Separator
+
+	// Hotkey configuration submenu
+	mOdometerHotkey = mOdometer.AddSubMenuItem("Configure Hotkey", "")
+	mHotkeyCmdCtrlO = mOdometerHotkey.AddSubMenuItemCheckbox("Cmd+Ctrl+O", "", currentHotkey == "cmd+ctrl+o")
+	mHotkeyCmdShiftO = mOdometerHotkey.AddSubMenuItemCheckbox("Cmd+Shift+O", "", currentHotkey == "cmd+shift+o")
+	mHotkeyCmdOptO = mOdometerHotkey.AddSubMenuItemCheckbox("Cmd+Opt+O", "", currentHotkey == "cmd+opt+o")
+	mHotkeyCtrlShiftO = mOdometerHotkey.AddSubMenuItemCheckbox("Ctrl+Shift+O", "", currentHotkey == "ctrl+shift+o")
+
+	// Handle odometer clicks
+	go handleOdometerClicks()
 
 	systray.AddSeparator()
 
@@ -825,6 +933,41 @@ func updateStatsDisplay() {
 	mWeekKeystrokes.SetTitle(fmt.Sprintf("This Week: %s keystrokes (%s words)", formatAbsolute(weekKeystrokes), formatAbsolute(weekWords)))
 	mWeekMouse.SetTitle(fmt.Sprintf("This Week: 🖱️ %s clicks, %s distance", formatAbsolute(weekClicks), formatDistance(weekMouseDistance)))
 
+	// Calculate today's averages
+	todayDate := time.Now().Format("2006-01-02")
+	todayActiveHours := calculateActiveHours(todayDate)
+
+	avgKeystrokesToday := float64(keystrokeCount) / todayActiveHours
+	avgWordsToday := float64(todayWords) / todayActiveHours
+	avgClicksToday := float64(todayClicks) / todayActiveHours
+	avgDistanceToday := todayMouseDistance / todayActiveHours
+
+	mAvgTodayKeystrokes.SetTitle(fmt.Sprintf("   %.0f keystrokes/hr", avgKeystrokesToday))
+	mAvgTodayWords.SetTitle(fmt.Sprintf("   %.0f words/hr", avgWordsToday))
+	mAvgTodayClicks.SetTitle(fmt.Sprintf("   %.0f clicks/hr", avgClicksToday))
+	mAvgTodayDistance.SetTitle(fmt.Sprintf("   %s/hr", formatDistance(avgDistanceToday)))
+
+	// Calculate week's averages (sum active hours across all days)
+	var weekActiveHours float64
+	now := time.Now()
+	for i := 0; i < 7; i++ {
+		date := now.AddDate(0, 0, -i).Format("2006-01-02")
+		weekActiveHours += calculateActiveHours(date)
+	}
+	if weekActiveHours == 0 {
+		weekActiveHours = 1.0
+	}
+
+	avgKeystrokesWeek := float64(weekKeystrokes) / weekActiveHours
+	avgWordsWeek := float64(weekWords) / weekActiveHours
+	avgClicksWeek := float64(weekClicks) / weekActiveHours
+	avgDistanceWeek := weekMouseDistance / weekActiveHours
+
+	mAvgWeekKeystrokes.SetTitle(fmt.Sprintf("   %.0f keystrokes/hr", avgKeystrokesWeek))
+	mAvgWeekWords.SetTitle(fmt.Sprintf("   %.0f words/hr", avgWordsWeek))
+	mAvgWeekClicks.SetTitle(fmt.Sprintf("   %.0f clicks/hr", avgClicksWeek))
+	mAvgWeekDistance.SetTitle(fmt.Sprintf("   %s/hr", formatDistance(avgDistanceWeek)))
+
 	// Update leaderboard
 	updateLeaderboard()
 }
@@ -1003,6 +1146,205 @@ func formatDistance(pixels float64) string {
 		inches := feet * 12
 		return fmt.Sprintf("%.0fin", inches)
 	}
+}
+
+// formatHotkeyDisplay converts internal hotkey format to display format
+func formatHotkeyDisplay(hotkey string) string {
+	switch hotkey {
+	case "cmd+ctrl+o":
+		return "⌘⌃O"
+	case "cmd+shift+o":
+		return "⌘⇧O"
+	case "cmd+opt+o":
+		return "⌘⌥O"
+	case "ctrl+shift+o":
+		return "⌃⇧O"
+	default:
+		return "⌘⌃O"
+	}
+}
+
+// updateOdometerDisplay updates the odometer menu items
+func updateOdometerDisplay() {
+	session, _ := store.GetOdometerSession()
+	if session == nil {
+		return
+	}
+
+	statusText := "Inactive"
+	toggleText := "Start Odometer"
+	if session.IsActive {
+		statusText = "Active"
+		toggleText = "Stop Odometer"
+	}
+
+	mOdometerStatus.SetTitle(fmt.Sprintf("Status: %s", statusText))
+
+	currentHotkey := store.GetOdometerHotkey()
+	hotkeyDisplay := formatHotkeyDisplay(currentHotkey)
+	mOdometerToggle.SetTitle(fmt.Sprintf("%s (%s)", toggleText, hotkeyDisplay))
+}
+
+// toggleOdometer starts or stops the odometer
+func toggleOdometer() {
+	session, _ := store.GetOdometerSession()
+	if session != nil && session.IsActive {
+		store.StopOdometer()
+		log.Println("Odometer stopped")
+	} else {
+		store.StartOdometer()
+		log.Println("Odometer started")
+	}
+	updateOdometerDisplay()
+}
+
+// handleOdometerClicks handles clicks on odometer menu items
+func handleOdometerClicks() {
+	for {
+		select {
+		case <-mOdometerToggle.ClickedCh:
+			toggleOdometer()
+
+		case <-mOdometerReset.ClickedCh:
+			store.ResetOdometer()
+			updateOdometerDisplay()
+			log.Println("Odometer reset")
+
+		case <-mHotkeyCmdCtrlO.ClickedCh:
+			store.SetOdometerHotkey("cmd+ctrl+o")
+			updateHotkeyChecks("cmd+ctrl+o")
+			updateOdometerDisplay()
+
+		case <-mHotkeyCmdShiftO.ClickedCh:
+			store.SetOdometerHotkey("cmd+shift+o")
+			updateHotkeyChecks("cmd+shift+o")
+			updateOdometerDisplay()
+
+		case <-mHotkeyCmdOptO.ClickedCh:
+			store.SetOdometerHotkey("cmd+opt+o")
+			updateHotkeyChecks("cmd+opt+o")
+			updateOdometerDisplay()
+
+		case <-mHotkeyCtrlShiftO.ClickedCh:
+			store.SetOdometerHotkey("ctrl+shift+o")
+			updateHotkeyChecks("ctrl+shift+o")
+			updateOdometerDisplay()
+		}
+	}
+}
+
+// updateHotkeyChecks updates the checkmarks on hotkey menu items
+func updateHotkeyChecks(selected string) {
+	mHotkeyCmdCtrlO.Uncheck()
+	mHotkeyCmdShiftO.Uncheck()
+	mHotkeyCmdOptO.Uncheck()
+	mHotkeyCtrlShiftO.Uncheck()
+	switch selected {
+	case "cmd+ctrl+o":
+		mHotkeyCmdCtrlO.Check()
+	case "cmd+shift+o":
+		mHotkeyCmdShiftO.Check()
+	case "cmd+opt+o":
+		mHotkeyCmdOptO.Check()
+	case "ctrl+shift+o":
+		mHotkeyCtrlShiftO.Check()
+	}
+}
+
+// updateModifierState tracks the state of modifier keys based on keycode
+func updateModifierState(keycode int) {
+	modifierMutex.Lock()
+	defer modifierMutex.Unlock()
+
+	switch keycode {
+	case 55, 54: // Left/Right Command
+		modifierState.cmd = true
+	case 59, 62: // Left/Right Control
+		modifierState.ctrl = true
+	case 58, 61: // Left/Right Option
+		modifierState.opt = true
+	case 56, 60: // Left/Right Shift
+		modifierState.shift = true
+	default:
+		// Reset modifier state after non-modifier key press
+		// (modifiers are typically released before the next key event)
+		modifierState.cmd = false
+		modifierState.ctrl = false
+		modifierState.opt = false
+		modifierState.shift = false
+	}
+}
+
+// checkOdometerHotkey checks if the current keycode + modifiers match the odometer hotkey
+func checkOdometerHotkey(keycode int) bool {
+	// Only trigger on 'O' key (keycode 31)
+	if keycode != 31 {
+		return false
+	}
+
+	modifierMutex.Lock()
+	defer modifierMutex.Unlock()
+
+	hotkey := store.GetOdometerHotkey()
+
+	switch hotkey {
+	case "cmd+ctrl+o":
+		return modifierState.cmd && modifierState.ctrl && !modifierState.opt && !modifierState.shift
+	case "cmd+shift+o":
+		return modifierState.cmd && modifierState.shift && !modifierState.ctrl && !modifierState.opt
+	case "cmd+opt+o":
+		return modifierState.cmd && modifierState.opt && !modifierState.ctrl && !modifierState.shift
+	case "ctrl+shift+o":
+		return modifierState.ctrl && modifierState.shift && !modifierState.cmd && !modifierState.opt
+	default:
+		return modifierState.cmd && modifierState.ctrl && !modifierState.opt && !modifierState.shift
+	}
+}
+
+// updateOdometerIfActive updates the odometer's current values if it's active
+func updateOdometerIfActive() {
+	session, _ := store.GetOdometerSession()
+	if session == nil || !session.IsActive {
+		return
+	}
+
+	// Get current totals
+	todayStats, _ := store.GetTodayStats()
+	mouseStats, _ := store.GetTodayMouseStats()
+
+	keystrokes := int64(0)
+	words := int64(0)
+	clicks := int64(0)
+	distance := float64(0)
+
+	if todayStats != nil {
+		keystrokes = todayStats.Keystrokes
+		words = todayStats.Words
+	}
+	if mouseStats != nil {
+		clicks = mouseStats.ClickCount
+		distance = mouseStats.TotalDistance
+	}
+
+	store.UpdateOdometerCurrent(keystrokes, words, clicks, distance)
+}
+
+// calculateActiveHours returns the number of hours with activity for a given date
+func calculateActiveHours(date string) float64 {
+	hourlyStats, err := store.GetHourlyStats(date)
+	if err != nil {
+		return 1.0 // Avoid division by zero
+	}
+	activeHours := 0.0
+	for _, h := range hourlyStats {
+		if h.Keystrokes > 0 {
+			activeHours++
+		}
+	}
+	if activeHours == 0 {
+		activeHours = 1.0 // Avoid division by zero
+	}
+	return activeHours
 }
 
 func showLeaderboard() {
@@ -1274,6 +1616,11 @@ func generateChartsHTML() (string, error) {
 		return "", err
 	}
 
+	yearlyData, err := prepareChartData(365)
+	if err != nil {
+		return "", err
+	}
+
 	formatMouseData := func(feetData []float64, divisor float64) string {
 		var result []string
 		for _, f := range feetData {
@@ -1288,6 +1635,29 @@ func generateChartsHTML() (string, error) {
 	monthlyMouseFeetStr := formatMouseData(monthlyData.mouseDataFeet, 1.0)
 	monthlyMouseCarsStr := formatMouseData(monthlyData.mouseDataFeet, 15.0)
 	monthlyMouseFieldsStr := formatMouseData(monthlyData.mouseDataFeet, 330.0)
+	yearlyMouseFeetStr := formatMouseData(yearlyData.mouseDataFeet, 1.0)
+	yearlyMouseCarsStr := formatMouseData(yearlyData.mouseDataFeet, 15.0)
+	yearlyMouseFieldsStr := formatMouseData(yearlyData.mouseDataFeet, 330.0)
+
+	// Get odometer data
+	odometerSession, _ := store.GetOdometerSession()
+	odometerIsActive := false
+	odometerStartTime := ""
+	odometerKeystrokes := int64(0)
+	odometerWords := int64(0)
+	odometerClicks := int64(0)
+	odometerDistanceFeet := float64(0)
+
+	if odometerSession != nil {
+		odometerIsActive = odometerSession.IsActive
+		if !odometerSession.StartTime.IsZero() {
+			odometerStartTime = odometerSession.StartTime.Format("Jan 2, 2006 3:04 PM")
+		}
+		odometerKeystrokes = odometerSession.CurrentKeystrokes - odometerSession.StartKeystrokes
+		odometerWords = odometerSession.CurrentWords - odometerSession.StartWords
+		odometerClicks = odometerSession.CurrentClicks - odometerSession.StartClicks
+		odometerDistanceFeet = mousetracker.PixelsToFeet(odometerSession.CurrentDistance - odometerSession.StartDistance)
+	}
 
 	// Determine if key types section should be visible
 	keyTypesDisplay := "none"
@@ -1451,6 +1821,118 @@ func generateChartsHTML() (string, error) {
             color: #888;
             font-size: 0.9em;
         }
+        .tooltip-container {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .tooltip-help {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%%;
+            background: rgba(255,255,255,0.15);
+            color: #888;
+            font-size: 11px;
+            cursor: help;
+            position: relative;
+        }
+        .tooltip-help:hover {
+            background: rgba(255,255,255,0.25);
+            color: #fff;
+        }
+        .tooltip-content {
+            display: none;
+            position: absolute;
+            bottom: 130%%;
+            left: 50%%;
+            transform: translateX(-50%%);
+            background: rgba(30,30,50,0.98);
+            border: 1px solid rgba(255,255,255,0.2);
+            border-radius: 8px;
+            padding: 10px 14px;
+            min-width: 220px;
+            font-size: 12px;
+            color: #ddd;
+            text-align: left;
+            z-index: 100;
+            line-height: 1.5;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .tooltip-content::after {
+            content: '';
+            position: absolute;
+            top: 100%%;
+            left: 50%%;
+            transform: translateX(-50%%);
+            border: 6px solid transparent;
+            border-top-color: rgba(30,30,50,0.98);
+        }
+        .tooltip-help:hover .tooltip-content {
+            display: block;
+        }
+        .tooltip-content strong {
+            color: #fff;
+        }
+        .odometer-display {
+            display: none;
+            max-width: 800px;
+            margin: 30px auto;
+        }
+        .odometer-box {
+            background: rgba(255,255,255,0.05);
+            border-radius: 16px;
+            padding: 25px;
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+        .odometer-box h2 {
+            margin-bottom: 20px;
+            font-size: 1.3em;
+            color: #aaa;
+        }
+        .odometer-status {
+            text-align: center;
+            padding: 15px;
+            margin-bottom: 20px;
+            border-radius: 8px;
+            font-size: 1.2em;
+            font-weight: bold;
+        }
+        .odometer-status.active {
+            background: rgba(122, 201, 111, 0.2);
+            color: #7bc96f;
+        }
+        .odometer-status.inactive {
+            background: rgba(255, 107, 107, 0.2);
+            color: #ff6b6b;
+        }
+        .odometer-table {
+            width: 100%%;
+            border-collapse: collapse;
+        }
+        .odometer-table th {
+            text-align: left;
+            padding: 12px;
+            border-bottom: 2px solid rgba(255,255,255,0.2);
+            color: #888;
+            font-size: 0.9em;
+        }
+        .odometer-table td {
+            padding: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+        }
+        .odometer-table tr:hover {
+            background: rgba(255,255,255,0.05);
+        }
+        .odometer-value {
+            font-weight: bold;
+            background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
     </style>
 </head>
 <body>
@@ -1462,6 +1944,8 @@ func generateChartsHTML() (string, error) {
             <select id="periodSelect" onchange="updateCharts()">
                 <option value="weekly">Weekly (7 days)</option>
                 <option value="monthly">Monthly (30 days)</option>
+                <option value="yearly">Yearly (365 days)</option>
+                <option value="odometer">Odometer</option>
             </select>
         </div>
         <div class="control-group">
@@ -1500,11 +1984,11 @@ func generateChartsHTML() (string, error) {
         </div>
         <div class="stat-item">
             <div class="stat-value" id="totalModifiers" style="background: linear-gradient(90deg, #ff9800, #f57c00); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">-</div>
-            <div class="stat-label">Modifiers</div>
+            <div class="stat-label tooltip-container">Modifiers <span class="tooltip-help">?<div class="tooltip-content"><strong>Modifier Keys:</strong><br>Shift (Left/Right), Control (Left/Right), Option/Alt (Left/Right), Command (Left/Right), Fn, Caps Lock</div></span></div>
         </div>
         <div class="stat-item">
             <div class="stat-value" id="totalSpecial" style="background: linear-gradient(90deg, #e91e63, #c2185b); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">-</div>
-            <div class="stat-label">Special Keys</div>
+            <div class="stat-label tooltip-container">Special Keys <span class="tooltip-help">?<div class="tooltip-content"><strong>Special Keys:</strong><br>Numbers (0-9), punctuation (!@#$%%), function keys (F1-F12), arrow keys, Tab, Return/Enter, Space, Backspace, Delete, Escape, etc.</div></span></div>
         </div>
     </div>
 
@@ -1533,7 +2017,7 @@ func generateChartsHTML() (string, error) {
         </div>
     </div>
 
-    <div class="heatmap-container">
+    <div class="heatmap-container" id="heatmapSection">
         <div class="heatmap-box">
             <h2>Activity Heatmap (Hourly)</h2>
             <div class="hour-labels">
@@ -1550,6 +2034,47 @@ func generateChartsHTML() (string, error) {
                 <div class="legend-box" style="background: #7bc96f;"></div>
                 <span class="legend-text">More</span>
             </div>
+        </div>
+    </div>
+
+    <div class="odometer-display" id="odometerDisplay">
+        <div class="odometer-box">
+            <h2>⏱️ Odometer Session</h2>
+            <div class="odometer-status" id="odometerStatusBox">Inactive</div>
+            <table class="odometer-table">
+                <thead>
+                    <tr>
+                        <th>Metric</th>
+                        <th>Value</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td>Start Time</td>
+                        <td class="odometer-value" id="odometerStartTime">-</td>
+                    </tr>
+                    <tr>
+                        <td>Keystrokes</td>
+                        <td class="odometer-value" id="odometerKeystrokes">-</td>
+                    </tr>
+                    <tr>
+                        <td>Words</td>
+                        <td class="odometer-value" id="odometerWords">-</td>
+                    </tr>
+                    <tr>
+                        <td>Mouse Clicks</td>
+                        <td class="odometer-value" id="odometerClicks">-</td>
+                    </tr>
+                    <tr>
+                        <td>Mouse Distance</td>
+                        <td class="odometer-value" id="odometerDistance">-</td>
+                    </tr>
+                    <tr>
+                        <td>Duration</td>
+                        <td class="odometer-value" id="odometerDuration">-</td>
+                    </tr>
+                </tbody>
+            </table>
         </div>
     </div>
 
@@ -1588,6 +2113,31 @@ func generateChartsHTML() (string, error) {
                 totalSpecial: %d,
                 days: 30,
                 heatmap: `+"`%s`"+`
+            },
+            yearly: {
+                labels: [%s],
+                keystrokes: [%s],
+                words: [%s],
+                mouse: { feet: [%s], cars: [%s], fields: [%s] },
+                letters: [%s],
+                modifiers: [%s],
+                special: [%s],
+                totalKeystrokes: %d,
+                totalWords: %d,
+                totalMouseFeet: %.2f,
+                totalLetters: %d,
+                totalModifiers: %d,
+                totalSpecial: %d,
+                days: 365,
+                heatmap: `+"`%s`"+`
+            },
+            odometer: {
+                isActive: %t,
+                startTime: '%s',
+                keystrokes: %d,
+                words: %d,
+                clicks: %d,
+                distanceFeet: %.2f
             }
         };
 
@@ -1642,6 +2192,26 @@ func generateChartsHTML() (string, error) {
         function updateCharts() {
             const period = document.getElementById('periodSelect').value;
             const unit = document.getElementById('unitSelect').value;
+
+            // Handle odometer display separately
+            if (period === 'odometer') {
+                document.querySelector('.stats-summary').style.display = 'none';
+                document.getElementById('keyTypesStats').style.display = 'none';
+                document.querySelectorAll('.charts-container').forEach(el => el.style.display = 'none');
+                document.getElementById('heatmapSection').style.display = 'none';
+                document.getElementById('odometerDisplay').style.display = 'block';
+                updateOdometerDisplay();
+                return;
+            }
+
+            // Show regular charts, hide odometer
+            document.querySelector('.stats-summary').style.display = 'flex';
+            const keyTypesStats = document.getElementById('keyTypesStats');
+            if (keyTypesStats) keyTypesStats.style.display = keyTypesStats.getAttribute('data-visible') === 'true' ? 'flex' : 'none';
+            document.querySelectorAll('.charts-container').forEach(el => el.style.display = 'grid');
+            document.getElementById('heatmapSection').style.display = 'block';
+            document.getElementById('odometerDisplay').style.display = 'none';
+
             const d = data[period];
 
             document.getElementById('totalKeystrokes').textContent = formatNumber(d.totalKeystrokes);
@@ -1711,6 +2281,51 @@ func generateChartsHTML() (string, error) {
             document.getElementById('heatmapContainer').innerHTML = d.heatmap;
         }
 
+        function updateOdometerDisplay() {
+            const od = data.odometer;
+            const unit = document.getElementById('unitSelect').value;
+
+            const statusBox = document.getElementById('odometerStatusBox');
+            if (od.isActive) {
+                statusBox.textContent = 'Active';
+                statusBox.className = 'odometer-status active';
+            } else {
+                statusBox.textContent = 'Inactive';
+                statusBox.className = 'odometer-status inactive';
+            }
+
+            document.getElementById('odometerStartTime').textContent = od.startTime || '-';
+            document.getElementById('odometerKeystrokes').textContent = formatNumber(od.keystrokes);
+            document.getElementById('odometerWords').textContent = formatNumber(od.words);
+            document.getElementById('odometerClicks').textContent = formatNumber(od.clicks);
+            document.getElementById('odometerDistance').textContent = formatDistance(od.distanceFeet, unit);
+
+            // Calculate duration if active
+            if (od.isActive && od.startTime) {
+                const start = new Date(od.startTime);
+                const now = new Date();
+                const totalSeconds = Math.floor((now - start) / 1000);
+                const hours = Math.floor(totalSeconds / 3600);
+                const minutes = Math.floor((totalSeconds %% 3600) / 60);
+                const seconds = totalSeconds %% 60;
+                let durationStr = '';
+                if (hours > 0) durationStr += hours + 'h ';
+                if (minutes > 0 || hours > 0) durationStr += minutes + 'm ';
+                durationStr += seconds + 's';
+                document.getElementById('odometerDuration').textContent = durationStr;
+            } else {
+                document.getElementById('odometerDuration').textContent = '-';
+            }
+        }
+
+        // Store initial visibility state for keyTypesStats
+        (function() {
+            const keyTypesStats = document.getElementById('keyTypesStats');
+            if (keyTypesStats) {
+                keyTypesStats.setAttribute('data-visible', keyTypesStats.style.display !== 'none');
+            }
+        })();
+
         updateCharts();
     </script>
 </body>
@@ -1749,6 +2364,28 @@ func generateChartsHTML() (string, error) {
 		monthlyData.totalModifiers,
 		monthlyData.totalSpecial,
 		monthlyData.heatmapHTML,
+		strings.Join(yearlyData.labels, ","),
+		strings.Join(yearlyData.keystrokeData, ","),
+		strings.Join(yearlyData.wordData, ","),
+		yearlyMouseFeetStr,
+		yearlyMouseCarsStr,
+		yearlyMouseFieldsStr,
+		strings.Join(yearlyData.letterData, ","),
+		strings.Join(yearlyData.modifierData, ","),
+		strings.Join(yearlyData.specialData, ","),
+		yearlyData.totalKeystrokes,
+		yearlyData.totalWords,
+		mousetracker.PixelsToFeet(yearlyData.totalMouseDist),
+		yearlyData.totalLetters,
+		yearlyData.totalModifiers,
+		yearlyData.totalSpecial,
+		yearlyData.heatmapHTML,
+		odometerIsActive,
+		odometerStartTime,
+		odometerKeystrokes,
+		odometerWords,
+		odometerClicks,
+		odometerDistanceFeet,
 	)
 
 	dataDir, err := getLogDir()

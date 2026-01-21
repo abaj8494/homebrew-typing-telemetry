@@ -1102,3 +1102,156 @@ func TestKeyTypeTotalsMatchKeystrokeTotal(t *testing.T) {
 		t.Errorf("Expected 3 special keys, got %d", stats.Special)
 	}
 }
+
+// TestOdometerSession tests the odometer session functionality
+func TestOdometerSession(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Test initial state - should be inactive
+	session, err := store.GetOdometerSession()
+	if err != nil {
+		t.Fatalf("GetOdometerSession failed: %v", err)
+	}
+	if session.IsActive {
+		t.Error("Expected odometer to be inactive by default")
+	}
+
+	// Start odometer
+	err = store.StartOdometer()
+	if err != nil {
+		t.Fatalf("StartOdometer failed: %v", err)
+	}
+
+	session, _ = store.GetOdometerSession()
+	if !session.IsActive {
+		t.Error("Expected odometer to be active after start")
+	}
+	if session.StartTime.IsZero() {
+		t.Error("Expected start time to be set")
+	}
+
+	// Stop odometer
+	err = store.StopOdometer()
+	if err != nil {
+		t.Fatalf("StopOdometer failed: %v", err)
+	}
+
+	session, _ = store.GetOdometerSession()
+	if session.IsActive {
+		t.Error("Expected odometer to be inactive after stop")
+	}
+}
+
+// TestOdometerHotkey tests the odometer hotkey settings
+func TestOdometerHotkey(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Test default hotkey
+	hotkey := store.GetOdometerHotkey()
+	if hotkey != "cmd+ctrl+o" {
+		t.Errorf("Expected default hotkey 'cmd+ctrl+o', got %q", hotkey)
+	}
+
+	// Test setting custom hotkey
+	err := store.SetOdometerHotkey("cmd+shift+o")
+	if err != nil {
+		t.Fatalf("SetOdometerHotkey failed: %v", err)
+	}
+
+	hotkey = store.GetOdometerHotkey()
+	if hotkey != "cmd+shift+o" {
+		t.Errorf("Expected hotkey 'cmd+shift+o', got %q", hotkey)
+	}
+
+	// Test another hotkey
+	store.SetOdometerHotkey("ctrl+shift+o")
+	hotkey = store.GetOdometerHotkey()
+	if hotkey != "ctrl+shift+o" {
+		t.Errorf("Expected hotkey 'ctrl+shift+o', got %q", hotkey)
+	}
+}
+
+// TestUpdateOdometerCurrent tests updating odometer current values
+func TestUpdateOdometerCurrent(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Start odometer first
+	err := store.StartOdometer()
+	if err != nil {
+		t.Fatalf("StartOdometer failed: %v", err)
+	}
+
+	// Update current values
+	err = store.UpdateOdometerCurrent(100, 20, 50, 1500.5)
+	if err != nil {
+		t.Fatalf("UpdateOdometerCurrent failed: %v", err)
+	}
+
+	session, _ := store.GetOdometerSession()
+	if session.CurrentKeystrokes != 100 {
+		t.Errorf("Expected current keystrokes 100, got %d", session.CurrentKeystrokes)
+	}
+	if session.CurrentWords != 20 {
+		t.Errorf("Expected current words 20, got %d", session.CurrentWords)
+	}
+	if session.CurrentClicks != 50 {
+		t.Errorf("Expected current clicks 50, got %d", session.CurrentClicks)
+	}
+	if session.CurrentDistance != 1500.5 {
+		t.Errorf("Expected current distance 1500.5, got %f", session.CurrentDistance)
+	}
+}
+
+// TestResetOdometer tests resetting the odometer
+func TestResetOdometer(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Start and update odometer
+	store.StartOdometer()
+	store.UpdateOdometerCurrent(100, 20, 50, 1500.5)
+
+	// Reset odometer
+	err := store.ResetOdometer()
+	if err != nil {
+		t.Fatalf("ResetOdometer failed: %v", err)
+	}
+
+	session, _ := store.GetOdometerSession()
+	if session.IsActive {
+		t.Error("Expected odometer to be inactive after reset")
+	}
+	if session.CurrentKeystrokes != 0 {
+		t.Errorf("Expected current keystrokes 0 after reset, got %d", session.CurrentKeystrokes)
+	}
+	if session.CurrentWords != 0 {
+		t.Errorf("Expected current words 0 after reset, got %d", session.CurrentWords)
+	}
+	if session.CurrentClicks != 0 {
+		t.Errorf("Expected current clicks 0 after reset, got %d", session.CurrentClicks)
+	}
+	if session.CurrentDistance != 0 {
+		t.Errorf("Expected current distance 0 after reset, got %f", session.CurrentDistance)
+	}
+}
+
+// TestOdometerUpdateOnlyWhenActive tests that odometer only updates when active
+func TestOdometerUpdateOnlyWhenActive(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	defer cleanup()
+
+	// Try to update without starting
+	err := store.UpdateOdometerCurrent(100, 20, 50, 1500.5)
+	if err != nil {
+		t.Fatalf("UpdateOdometerCurrent failed: %v", err)
+	}
+
+	// Values should still be 0 because odometer is not active
+	session, _ := store.GetOdometerSession()
+	if session.CurrentKeystrokes != 0 {
+		t.Errorf("Expected current keystrokes 0 when inactive, got %d", session.CurrentKeystrokes)
+	}
+}
