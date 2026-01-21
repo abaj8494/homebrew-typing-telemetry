@@ -10,8 +10,11 @@ package keylogger
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
 
-extern void goKeystrokeCallback(int keycode, int isRepeat);
+extern void goKeystrokeCallback(int keycode, int isRepeat, int isInertia);
 extern void goModifierCallback(int keycode);
+
+// Magic value to identify inertia-generated synthetic events (must match inertia package)
+#define INERTIA_EVENT_MARKER 0x494E4552
 
 // Track previous modifier flags to detect key down vs key up
 static CGEventFlags previousFlags = 0;
@@ -21,7 +24,9 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
         CGKeyCode keycode = (CGKeyCode)CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode);
         // Check if this is a key repeat event (holding key down)
         int isRepeat = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
-        goKeystrokeCallback((int)keycode, isRepeat);
+        // Check if this is a synthetic event from inertia
+        int isInertia = (CGEventGetIntegerValueField(event, kCGEventSourceUserData) == INERTIA_EVENT_MARKER) ? 1 : 0;
+        goKeystrokeCallback((int)keycode, isRepeat, isInertia);
     } else if (type == kCGEventFlagsChanged) {
         // Handle modifier key presses (Shift, Ctrl, Command, Option, etc.)
         CGEventFlags currentFlags = CGEventGetFlags(event);
@@ -93,9 +98,14 @@ var (
 )
 
 //export goKeystrokeCallback
-func goKeystrokeCallback(keycode C.int, isRepeat C.int) {
+func goKeystrokeCallback(keycode C.int, isRepeat C.int, isInertia C.int) {
 	// Ignore key repeat events - holding a key counts as 1 keypress
 	if isRepeat != 0 {
+		return
+	}
+
+	// Ignore synthetic events from inertia - holding with inertia counts as 1 keypress
+	if isInertia != 0 {
 		return
 	}
 
