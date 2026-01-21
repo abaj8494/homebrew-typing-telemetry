@@ -1,6 +1,6 @@
 cask "typtel" do
   version "1.3.2"
-  sha256 "e9eb08f4dcec37372662a67a573f5495d134f6260c18c693465f8c95038a65f0"
+  sha256 "2396f77118ef748281fb87e0503e9abc732c75ec454cdd68a96130fc59868b1e"
 
   url "https://github.com/abaj8494/homebrew-typing-telemetry/releases/download/v#{version}/Typtel-#{version}.zip"
   name "Typtel"
