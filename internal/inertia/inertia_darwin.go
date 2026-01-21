@@ -314,13 +314,16 @@ func getAccelerationStep(keyCount int) int {
 
 // getRepeatInterval calculates the repeat interval based on acceleration
 func getRepeatInterval(keyCount int, cfg Config) time.Duration {
-	step := getAccelerationStep(keyCount)
+	// AccelRate affects how quickly you progress through steps, not the final speed
+	// Higher AccelRate = fewer keypresses to reach max speed
+	// Lower AccelRate = more keypresses to reach max speed
+	scaledKeyCount := int(float64(keyCount) * cfg.AccelRate)
+	step := getAccelerationStep(scaledKeyCount)
 
-	// Base interval decreases with each step
-	// Apply acceleration rate multiplier
-	interval := float64(baseRepeatInterval) / (float64(step) * cfg.AccelRate)
+	// Base interval decreases with each step (AccelRate no longer affects this)
+	interval := float64(baseRepeatInterval) / float64(step)
 
-	// Apply max speed cap
+	// Apply max speed cap - this determines the actual top speed
 	minInterval := maxSpeedCaps[cfg.MaxSpeed]
 	if minInterval == 0 {
 		minInterval = maxSpeedCaps["fast"]
