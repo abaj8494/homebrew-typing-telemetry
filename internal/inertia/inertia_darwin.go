@@ -376,6 +376,14 @@ func startKeyRepeat(keycode int) {
 			debugLog("REPEAT_DELAY_DONE keycode=%d, starting acceleration", kc)
 		}
 
+		// Reset lastConfirmTime now that acceleration is starting
+		// This ensures safety timeout is measured from acceleration start, not key press
+		mu.Lock()
+		if s, ok := keyStates[kc]; ok && s.isHeld {
+			s.lastConfirmTime = time.Now()
+		}
+		mu.Unlock()
+
 		for {
 			mu.RLock()
 			s, ok := keyStates[kc]
