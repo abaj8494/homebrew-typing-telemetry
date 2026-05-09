@@ -170,3 +170,172 @@ func make24HoursWithPeakAt(peakHour int, peakValue int64) []int64 {
 	data[peakHour] = peakValue
 	return data
 }
+
+func TestCalculateAverageWords(t *testing.T) {
+	tests := []struct {
+		name     string
+		days     []DayData
+		expected float64
+	}{
+		{"empty", nil, 0},
+		{"single", []DayData{{Words: 250}}, 250},
+		{"three days", []DayData{{Words: 100}, {Words: 200}, {Words: 300}}, 200},
+		{"with zeros", []DayData{{Words: 0}, {Words: 100}, {Words: 0}}, 100.0 / 3.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CalculateAverageWords(tt.days); got != tt.expected {
+				t.Errorf("CalculateAverageWords() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCalculateAverageWordsActive(t *testing.T) {
+	tests := []struct {
+		name     string
+		days     []DayData
+		expected float64
+	}{
+		{"empty", nil, 0},
+		{"all inactive", []DayData{{Keystrokes: 0, Words: 0}, {Keystrokes: 0, Words: 0}}, 0},
+		{"mix", []DayData{{Keystrokes: 0, Words: 0}, {Keystrokes: 500, Words: 100}, {Keystrokes: 100, Words: 50}}, 75},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CalculateAverageWordsActive(tt.days); got != tt.expected {
+				t.Errorf("CalculateAverageWordsActive() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestCountActiveDays(t *testing.T) {
+	tests := []struct {
+		name     string
+		days     []DayData
+		expected int
+	}{
+		{"empty", nil, 0},
+		{"none active", []DayData{{}, {}}, 0},
+		{"all active", []DayData{{Keystrokes: 100}, {Keystrokes: 1}}, 2},
+		{"mixed", []DayData{{Keystrokes: 100}, {}, {Keystrokes: 1}, {}}, 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CountActiveDays(tt.days); got != tt.expected {
+				t.Errorf("CountActiveDays() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFindPeakDay(t *testing.T) {
+	d1 := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	d2 := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	d3 := time.Date(2026, 1, 3, 0, 0, 0, 0, time.UTC)
+
+	tests := []struct {
+		name        string
+		days        []DayData
+		wantOK      bool
+		wantPeakKey int64
+	}{
+		{"empty", nil, false, 0},
+		{"all zero", []DayData{{Date: d1}, {Date: d2}}, false, 0},
+		{
+			"clear peak",
+			[]DayData{
+				{Date: d1, Keystrokes: 100},
+				{Date: d2, Keystrokes: 500},
+				{Date: d3, Keystrokes: 200},
+			},
+			true, 500,
+		},
+		{
+			"tie picks earliest",
+			[]DayData{
+				{Date: d1, Keystrokes: 500},
+				{Date: d2, Keystrokes: 500},
+			},
+			true, 500,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			peak, ok := FindPeakDay(tt.days)
+			if ok != tt.wantOK {
+				t.Fatalf("FindPeakDay() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && peak.Keystrokes != tt.wantPeakKey {
+				t.Errorf("FindPeakDay() peak = %v, want %v", peak.Keystrokes, tt.wantPeakKey)
+			}
+		})
+	}
+}
+
+func TestCurrentStreak(t *testing.T) {
+	tests := []struct {
+		name     string
+		days     []DayData
+		expected int
+	}{
+		{"empty", nil, 0},
+		{"all inactive", []DayData{{}, {}}, 0},
+		{"trailing inactive", []DayData{{Keystrokes: 100}, {}}, 0},
+		{"streak of 1", []DayData{{}, {Keystrokes: 100}}, 1},
+		{"streak of 3", []DayData{{}, {Keystrokes: 1}, {Keystrokes: 1}, {Keystrokes: 1}}, 3},
+		{"all active", []DayData{{Keystrokes: 1}, {Keystrokes: 1}, {Keystrokes: 1}}, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := CurrentStreak(tt.days); got != tt.expected {
+				t.Errorf("CurrentStreak() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestLongestStreak(t *testing.T) {
+	tests := []struct {
+		name     string
+		days     []DayData
+		expected int
+	}{
+		{"empty", nil, 0},
+		{"none active", []DayData{{}, {}, {}}, 0},
+		{"single run", []DayData{{Keystrokes: 1}, {Keystrokes: 1}, {Keystrokes: 1}}, 3},
+		{"split run", []DayData{{Keystrokes: 1}, {}, {Keystrokes: 1}, {Keystrokes: 1}}, 2},
+		{"trailing run", []DayData{{Keystrokes: 1}, {}, {Keystrokes: 1}, {Keystrokes: 1}, {Keystrokes: 1}}, 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := LongestStreak(tt.days); got != tt.expected {
+				t.Errorf("LongestStreak() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestFormatHour(t *testing.T) {
+	tests := []struct {
+		hour int
+		want string
+	}{
+		{-1, "—"},
+		{24, "—"},
+		{0, "12 AM"},
+		{1, "1 AM"},
+		{11, "11 AM"},
+		{12, "12 PM"},
+		{13, "1 PM"},
+		{23, "11 PM"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			if got := FormatHour(tt.hour); got != tt.want {
+				t.Errorf("FormatHour(%d) = %q, want %q", tt.hour, got, tt.want)
+			}
+		})
+	}
+}

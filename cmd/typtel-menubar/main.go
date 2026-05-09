@@ -115,6 +115,7 @@ import (
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
 	"github.com/aayushbajaj/typing-telemetry/internal/mousetracker"
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
+	"github.com/aayushbajaj/typing-telemetry/pkg/stats"
 )
 
 var (
@@ -1586,6 +1587,19 @@ func generateChartsHTML() (string, error) {
 		totalModifiers  int64
 		totalSpecial    int64
 		heatmapHTML     string
+		// Derived stats
+		avgKeystrokes   float64
+		avgWordsActive  float64
+		peakDayLabel    string
+		peakDayValue    int64
+		peakWordsLabel  string
+		peakWordsValue  int64
+		peakHourLabel   string
+		peakHourValue   int64
+		currentStreak   int
+		longestStreak   int
+		activeDays      int
+		totalClicks     int64
 	}
 
 	prepareChartData := func(days int) (*chartData, error) {
@@ -1606,6 +1620,10 @@ func generateChartsHTML() (string, error) {
 			return nil, err
 		}
 
+		dayData := make([]stats.DayData, 0, len(histStats))
+		var peakWords stats.DayData
+		hourTotals := make([]int64, 24)
+
 		for i, stat := range histStats {
 			t, _ := time.Parse("2006-01-02", stat.Date)
 			data.labels = append(data.labels, fmt.Sprintf("'%s'", t.Format("Jan 2")))
@@ -1620,13 +1638,58 @@ func generateChartsHTML() (string, error) {
 			data.totalModifiers += stat.Modifiers
 			data.totalSpecial += stat.Special
 
+			dd := stats.DayData{Date: t, Keystrokes: stat.Keystrokes, Words: stat.Words}
+			dayData = append(dayData, dd)
+			if dd.Words > peakWords.Words {
+				peakWords = dd
+			}
+
+			if hours, ok := hourlyData[stat.Date]; ok {
+				for _, h := range hours {
+					if h.Hour >= 0 && h.Hour < 24 {
+						hourTotals[h.Hour] += h.Keystrokes
+					}
+				}
+			}
+
 			if i < len(mouseStats) {
 				feet := mousetracker.PixelsToFeet(mouseStats[i].TotalDistance)
 				data.mouseDataFeet = append(data.mouseDataFeet, feet)
 				data.totalMouseDist += mouseStats[i].TotalDistance
+				data.totalClicks += mouseStats[i].ClickCount
 			} else {
 				data.mouseDataFeet = append(data.mouseDataFeet, 0)
 			}
+		}
+
+		// Derived stats
+		if days > 0 {
+			data.avgKeystrokes = float64(data.totalKeystrokes) / float64(days)
+		}
+		data.avgWordsActive = stats.CalculateAverageWordsActive(dayData)
+		data.activeDays = stats.CountActiveDays(dayData)
+		data.currentStreak = stats.CurrentStreak(dayData)
+		data.longestStreak = stats.LongestStreak(dayData)
+
+		if peak, ok := stats.FindPeakDay(dayData); ok {
+			data.peakDayLabel = peak.Date.Format("Jan 2")
+			data.peakDayValue = peak.Keystrokes
+		} else {
+			data.peakDayLabel = "—"
+		}
+		if peakWords.Words > 0 {
+			data.peakWordsLabel = peakWords.Date.Format("Jan 2")
+			data.peakWordsValue = peakWords.Words
+		} else {
+			data.peakWordsLabel = "—"
+		}
+
+		hour, count := stats.FindPeakHour(hourTotals)
+		if count > 0 {
+			data.peakHourLabel = stats.FormatHour(hour)
+			data.peakHourValue = count
+		} else {
+			data.peakHourLabel = "—"
 		}
 
 		data.heatmapHTML = generateHeatmapHTML(hourlyData, days)
@@ -1853,16 +1916,32 @@ func generateChartsHTML() (string, error) {
         .stats-summary {
             display: flex;
             justify-content: center;
+            flex-wrap: wrap;
             gap: 40px;
             margin: 30px 0;
         }
+        .stats-summary-secondary {
+            margin-top: -10px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.08);
+            max-width: 1400px;
+            margin-left: auto;
+            margin-right: auto;
+        }
         .stat-item {
             text-align: center;
+            min-width: 110px;
         }
         .stat-value {
             font-size: 2.5em;
             font-weight: bold;
             background: linear-gradient(90deg, #00d2ff, #3a7bd5);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .stat-secondary {
+            font-size: 1.6em;
+            background: linear-gradient(90deg, #ffd166, #f08a5d);
             -webkit-background-clip: text;
             -webkit-text-fill-color: transparent;
         }
@@ -2021,8 +2100,43 @@ func generateChartsHTML() (string, error) {
             <div class="stat-label">Avg Keystrokes/Day</div>
         </div>
         <div class="stat-item">
+            <div class="stat-value" id="avgWords">-</div>
+            <div class="stat-label tooltip-container">Avg Words / Active Day <span class="tooltip-help">?<div class="tooltip-content"><strong>Average Words per Active Day</strong><br>Mean words on days with at least one keystroke. Excludes idle days so the figure reflects how much you type when you're actually typing.</div></span></div>
+        </div>
+        <div class="stat-item">
             <div class="stat-value" id="totalMouse">-</div>
             <div class="stat-label">Mouse Distance</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value" id="totalClicks">-</div>
+            <div class="stat-label">Mouse Clicks</div>
+        </div>
+    </div>
+
+    <div class="stats-summary stats-summary-secondary">
+        <div class="stat-item">
+            <div class="stat-value stat-secondary" id="peakDay">-</div>
+            <div class="stat-label" id="peakDayLabel">Peak Day</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value stat-secondary" id="peakWords">-</div>
+            <div class="stat-label" id="peakWordsLabel">Peak Words Day</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value stat-secondary" id="peakHour">-</div>
+            <div class="stat-label" id="peakHourLabel">Most Active Hour</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value stat-secondary" id="currentStreak">-</div>
+            <div class="stat-label tooltip-container">Current Streak <span class="tooltip-help">?<div class="tooltip-content"><strong>Current Streak</strong><br>Number of consecutive days, ending today, with at least one keystroke recorded.</div></span></div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value stat-secondary" id="longestStreak">-</div>
+            <div class="stat-label">Longest Streak</div>
+        </div>
+        <div class="stat-item">
+            <div class="stat-value stat-secondary" id="activeDays">-</div>
+            <div class="stat-label" id="activeDaysLabel">Active Days</div>
         </div>
     </div>
 
@@ -2161,9 +2275,21 @@ func generateChartsHTML() (string, error) {
                 totalKeystrokes: %d,
                 totalWords: %d,
                 totalMouseFeet: %.2f,
+                totalClicks: %d,
                 totalLetters: %d,
                 totalModifiers: %d,
                 totalSpecial: %d,
+                avgKeystrokes: %.2f,
+                avgWordsActive: %.2f,
+                peakDayLabel: '%s',
+                peakDayValue: %d,
+                peakWordsLabel: '%s',
+                peakWordsValue: %d,
+                peakHourLabel: '%s',
+                peakHourValue: %d,
+                currentStreak: %d,
+                longestStreak: %d,
+                activeDays: %d,
                 days: 7,
                 heatmap: `+"`%s`"+`
             },
@@ -2178,9 +2304,21 @@ func generateChartsHTML() (string, error) {
                 totalKeystrokes: %d,
                 totalWords: %d,
                 totalMouseFeet: %.2f,
+                totalClicks: %d,
                 totalLetters: %d,
                 totalModifiers: %d,
                 totalSpecial: %d,
+                avgKeystrokes: %.2f,
+                avgWordsActive: %.2f,
+                peakDayLabel: '%s',
+                peakDayValue: %d,
+                peakWordsLabel: '%s',
+                peakWordsValue: %d,
+                peakHourLabel: '%s',
+                peakHourValue: %d,
+                currentStreak: %d,
+                longestStreak: %d,
+                activeDays: %d,
                 days: 30,
                 heatmap: `+"`%s`"+`
             },
@@ -2195,9 +2333,21 @@ func generateChartsHTML() (string, error) {
                 totalKeystrokes: %d,
                 totalWords: %d,
                 totalMouseFeet: %.2f,
+                totalClicks: %d,
                 totalLetters: %d,
                 totalModifiers: %d,
                 totalSpecial: %d,
+                avgKeystrokes: %.2f,
+                avgWordsActive: %.2f,
+                peakDayLabel: '%s',
+                peakDayValue: %d,
+                peakWordsLabel: '%s',
+                peakWordsValue: %d,
+                peakHourLabel: '%s',
+                peakHourValue: %d,
+                currentStreak: %d,
+                longestStreak: %d,
+                activeDays: %d,
                 days: 365,
                 heatmap: `+"`%s`"+`
             },
@@ -2266,7 +2416,7 @@ func generateChartsHTML() (string, error) {
 
             // Handle odometer display separately
             if (period === 'odometer') {
-                document.querySelector('.stats-summary').style.display = 'none';
+                document.querySelectorAll('.stats-summary').forEach(el => el.style.display = 'none');
                 document.getElementById('keyTypesStats').style.display = 'none';
                 document.querySelectorAll('.charts-container').forEach(el => el.style.display = 'none');
                 document.getElementById('heatmapSection').style.display = 'none';
@@ -2276,7 +2426,7 @@ func generateChartsHTML() (string, error) {
             }
 
             // Show regular charts, hide odometer
-            document.querySelector('.stats-summary').style.display = 'flex';
+            document.querySelectorAll('.stats-summary').forEach(el => el.style.display = 'flex');
             const keyTypesStats = document.getElementById('keyTypesStats');
             if (keyTypesStats) keyTypesStats.style.display = keyTypesStats.getAttribute('data-visible') === 'true' ? 'flex' : 'none';
             document.querySelectorAll('.charts-container').forEach(el => el.style.display = 'grid');
@@ -2287,8 +2437,46 @@ func generateChartsHTML() (string, error) {
 
             document.getElementById('totalKeystrokes').textContent = formatNumber(d.totalKeystrokes);
             document.getElementById('totalWords').textContent = formatNumber(d.totalWords);
-            document.getElementById('avgKeystrokes').textContent = formatNumber(Math.round(d.totalKeystrokes / d.days));
+            document.getElementById('avgKeystrokes').textContent = formatNumber(Math.round(d.avgKeystrokes));
+            document.getElementById('avgWords').textContent = formatNumber(Math.round(d.avgWordsActive));
             document.getElementById('totalMouse').textContent = formatDistance(d.totalMouseFeet, unit);
+            document.getElementById('totalClicks').textContent = formatNumber(d.totalClicks);
+
+            // Secondary stats row
+            const peakDayEl = document.getElementById('peakDay');
+            const peakDayLabelEl = document.getElementById('peakDayLabel');
+            if (d.peakDayValue > 0) {
+                peakDayEl.textContent = formatNumber(d.peakDayValue);
+                peakDayLabelEl.textContent = 'Peak Day (' + d.peakDayLabel + ')';
+            } else {
+                peakDayEl.textContent = '—';
+                peakDayLabelEl.textContent = 'Peak Day';
+            }
+
+            const peakWordsEl = document.getElementById('peakWords');
+            const peakWordsLabelEl = document.getElementById('peakWordsLabel');
+            if (d.peakWordsValue > 0) {
+                peakWordsEl.textContent = formatNumber(d.peakWordsValue);
+                peakWordsLabelEl.textContent = 'Peak Words (' + d.peakWordsLabel + ')';
+            } else {
+                peakWordsEl.textContent = '—';
+                peakWordsLabelEl.textContent = 'Peak Words Day';
+            }
+
+            const peakHourEl = document.getElementById('peakHour');
+            const peakHourLabelEl = document.getElementById('peakHourLabel');
+            if (d.peakHourValue > 0) {
+                peakHourEl.textContent = d.peakHourLabel;
+                peakHourLabelEl.textContent = 'Most Active Hour (' + formatNumber(d.peakHourValue) + ')';
+            } else {
+                peakHourEl.textContent = '—';
+                peakHourLabelEl.textContent = 'Most Active Hour';
+            }
+
+            document.getElementById('currentStreak').textContent = d.currentStreak + (d.currentStreak === 1 ? ' day' : ' days');
+            document.getElementById('longestStreak').textContent = d.longestStreak + (d.longestStreak === 1 ? ' day' : ' days');
+            document.getElementById('activeDays').textContent = d.activeDays;
+            document.getElementById('activeDaysLabel').textContent = 'Active Days / ' + d.days;
 
             // Update key types stats if visible
             if (keyTypesStats && keyTypesStats.style.display !== 'none') {
@@ -2443,9 +2631,21 @@ func generateChartsHTML() (string, error) {
 		weeklyData.totalKeystrokes,
 		weeklyData.totalWords,
 		mousetracker.PixelsToFeet(weeklyData.totalMouseDist),
+		weeklyData.totalClicks,
 		weeklyData.totalLetters,
 		weeklyData.totalModifiers,
 		weeklyData.totalSpecial,
+		weeklyData.avgKeystrokes,
+		weeklyData.avgWordsActive,
+		weeklyData.peakDayLabel,
+		weeklyData.peakDayValue,
+		weeklyData.peakWordsLabel,
+		weeklyData.peakWordsValue,
+		weeklyData.peakHourLabel,
+		weeklyData.peakHourValue,
+		weeklyData.currentStreak,
+		weeklyData.longestStreak,
+		weeklyData.activeDays,
 		weeklyData.heatmapHTML,
 		strings.Join(monthlyData.labels, ","),
 		strings.Join(monthlyData.keystrokeData, ","),
@@ -2459,9 +2659,21 @@ func generateChartsHTML() (string, error) {
 		monthlyData.totalKeystrokes,
 		monthlyData.totalWords,
 		mousetracker.PixelsToFeet(monthlyData.totalMouseDist),
+		monthlyData.totalClicks,
 		monthlyData.totalLetters,
 		monthlyData.totalModifiers,
 		monthlyData.totalSpecial,
+		monthlyData.avgKeystrokes,
+		monthlyData.avgWordsActive,
+		monthlyData.peakDayLabel,
+		monthlyData.peakDayValue,
+		monthlyData.peakWordsLabel,
+		monthlyData.peakWordsValue,
+		monthlyData.peakHourLabel,
+		monthlyData.peakHourValue,
+		monthlyData.currentStreak,
+		monthlyData.longestStreak,
+		monthlyData.activeDays,
 		monthlyData.heatmapHTML,
 		strings.Join(yearlyData.labels, ","),
 		strings.Join(yearlyData.keystrokeData, ","),
@@ -2475,9 +2687,21 @@ func generateChartsHTML() (string, error) {
 		yearlyData.totalKeystrokes,
 		yearlyData.totalWords,
 		mousetracker.PixelsToFeet(yearlyData.totalMouseDist),
+		yearlyData.totalClicks,
 		yearlyData.totalLetters,
 		yearlyData.totalModifiers,
 		yearlyData.totalSpecial,
+		yearlyData.avgKeystrokes,
+		yearlyData.avgWordsActive,
+		yearlyData.peakDayLabel,
+		yearlyData.peakDayValue,
+		yearlyData.peakWordsLabel,
+		yearlyData.peakWordsValue,
+		yearlyData.peakHourLabel,
+		yearlyData.peakHourValue,
+		yearlyData.currentStreak,
+		yearlyData.longestStreak,
+		yearlyData.activeDays,
 		yearlyData.heatmapHTML,
 		odometerIsActive,
 		odometerStartTime,
