@@ -10,8 +10,8 @@ package keylogger
 #include <CoreGraphics/CoreGraphics.h>
 #include <ApplicationServices/ApplicationServices.h>
 
-extern void goKeystrokeCallback(int keycode, int isRepeat, int isInertia);
-extern void goModifierCallback(int keycode);
+extern void goKeystrokeCallback(int keycode, int isRepeat, int isInertia, unsigned long long flags);
+extern void goModifierCallback(int keycode, unsigned long long flags);
 
 // Magic value to identify inertia-generated synthetic events (must match inertia package)
 #define INERTIA_EVENT_MARKER 0x494E4552
@@ -26,7 +26,9 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
         int isRepeat = (int)CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat);
         // Check if this is a synthetic event from inertia
         int isInertia = (CGEventGetIntegerValueField(event, kCGEventSourceUserData) == INERTIA_EVENT_MARKER) ? 1 : 0;
-        goKeystrokeCallback((int)keycode, isRepeat, isInertia);
+        // Capture the modifier flags active at the moment of the keystroke.
+        CGEventFlags flags = CGEventGetFlags(event);
+        goKeystrokeCallback((int)keycode, isRepeat, isInertia, (unsigned long long)flags);
     } else if (type == kCGEventFlagsChanged) {
         // Handle modifier key presses (Shift, Ctrl, Command, Option, etc.)
         CGEventFlags currentFlags = CGEventGetFlags(event);
@@ -38,7 +40,7 @@ static CGEventRef eventCallback(CGEventTapProxy proxy, CGEventType type, CGEvent
         int isKeyDown = (currentFlags & diff) != 0;
 
         if (isKeyDown) {
-            goModifierCallback((int)keycode);
+            goModifierCallback((int)keycode, (unsigned long long)currentFlags);
         }
 
         previousFlags = currentFlags;
@@ -91,14 +93,41 @@ import (
 	"sync"
 )
 
+// CGEventFlag bits, as published by CoreGraphics.
+const (
+	flagShift = 1 << 17
+	flagCtrl  = 1 << 18
+	flagOpt   = 1 << 19
+	flagCmd   = 1 << 20
+)
+
+// KeystrokeEvent carries a keycode plus the modifier flag state at the moment
+// the event was captured. Flag bits match CGEventFlags (kCGEventFlagMask*).
+type KeystrokeEvent struct {
+	Keycode int
+	Flags   uint64
+}
+
+// CmdHeld reports whether Command was held when this event fired.
+func (e KeystrokeEvent) CmdHeld() bool { return e.Flags&flagCmd != 0 }
+
+// CtrlHeld reports whether Control was held when this event fired.
+func (e KeystrokeEvent) CtrlHeld() bool { return e.Flags&flagCtrl != 0 }
+
+// OptHeld reports whether Option/Alt was held when this event fired.
+func (e KeystrokeEvent) OptHeld() bool { return e.Flags&flagOpt != 0 }
+
+// ShiftHeld reports whether Shift was held when this event fired.
+func (e KeystrokeEvent) ShiftHeld() bool { return e.Flags&flagShift != 0 }
+
 var (
-	keystrokeChan chan int
+	keystrokeChan chan KeystrokeEvent
 	mu            sync.Mutex
 	running       bool
 )
 
 //export goKeystrokeCallback
-func goKeystrokeCallback(keycode C.int, isRepeat C.int, isInertia C.int) {
+func goKeystrokeCallback(keycode C.int, isRepeat C.int, isInertia C.int, flags C.ulonglong) {
 	// Ignore key repeat events - holding a key counts as 1 keypress
 	if isRepeat != 0 {
 		return
@@ -113,7 +142,7 @@ func goKeystrokeCallback(keycode C.int, isRepeat C.int, isInertia C.int) {
 	defer mu.Unlock()
 	if keystrokeChan != nil {
 		select {
-		case keystrokeChan <- int(keycode):
+		case keystrokeChan <- KeystrokeEvent{Keycode: int(keycode), Flags: uint64(flags)}:
 		default:
 			// Channel full, drop keystroke
 		}
@@ -121,13 +150,13 @@ func goKeystrokeCallback(keycode C.int, isRepeat C.int, isInertia C.int) {
 }
 
 //export goModifierCallback
-func goModifierCallback(keycode C.int) {
+func goModifierCallback(keycode C.int, flags C.ulonglong) {
 	// Handle modifier key press (solo press of Shift, Ctrl, Command, etc.)
 	mu.Lock()
 	defer mu.Unlock()
 	if keystrokeChan != nil {
 		select {
-		case keystrokeChan <- int(keycode):
+		case keystrokeChan <- KeystrokeEvent{Keycode: int(keycode), Flags: uint64(flags)}:
 		default:
 			// Channel full, drop keystroke
 		}
@@ -176,8 +205,8 @@ func PlaySound(soundID int) {
 	C.playSystemSound(C.int(soundID))
 }
 
-// Start begins capturing keystrokes and returns a channel that receives keycodes
-func Start() (<-chan int, error) {
+// Start begins capturing keystrokes and returns a channel that receives KeystrokeEvents.
+func Start() (<-chan KeystrokeEvent, error) {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -189,7 +218,7 @@ func Start() (<-chan int, error) {
 		return nil, errors.New("accessibility permissions not granted - please enable in System Preferences > Privacy & Security > Accessibility")
 	}
 
-	keystrokeChan = make(chan int, 1000)
+	keystrokeChan = make(chan KeystrokeEvent, 1000)
 
 	go func() {
 		eventTap := C.createEventTap()

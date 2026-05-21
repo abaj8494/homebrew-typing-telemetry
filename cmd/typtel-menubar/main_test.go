@@ -69,34 +69,6 @@ func TestGetHeatmapColor(t *testing.T) {
 	}
 }
 
-func TestIsWordBoundary(t *testing.T) {
-	tests := []struct {
-		name     string
-		keycode  int
-		expected bool
-	}{
-		{"space (49)", 49, true},
-		{"return (36)", 36, true},
-		{"tab (48)", 48, true},
-		{"letter a (0)", 0, false},
-		{"letter s (1)", 1, false},
-		{"number 1 (18)", 18, false},
-		{"backspace (51)", 51, false},
-		{"escape (53)", 53, false},
-		{"random keycode", 100, false},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := isWordBoundary(tt.keycode)
-			if result != tt.expected {
-				t.Errorf("isWordBoundary(%d) = %v, want %v",
-					tt.keycode, result, tt.expected)
-			}
-		})
-	}
-}
-
 func TestGenerateHourLabels(t *testing.T) {
 	labels := generateHourLabels()
 

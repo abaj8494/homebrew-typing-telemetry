@@ -564,6 +564,10 @@ const (
 	SettingShowKeyTypes = "show_key_types"
 	// Odometer settings
 	SettingOdometerHotkey = "odometer_hotkey"
+	// Word-count strictness settings
+	SettingWordCountStrictMode = "word_count_strict_mode"
+	SettingWordCountAllowlist  = "word_count_app_allowlist"
+	SettingWordCountAppsSeen   = "word_count_apps_seen"
 )
 
 // Distance unit options
@@ -687,6 +691,85 @@ func (s *Store) GetDistanceUnit() string {
 // SetDistanceUnit sets the distance unit
 func (s *Store) SetDistanceUnit(unit string) error {
 	return s.SetSetting(SettingDistanceUnit, unit)
+}
+
+// IsStrictWordCountEnabled returns whether per-app word-count filtering is active.
+// Default: false. When false, the smarter keystroke heuristics still apply;
+// only the per-app allowlist filter is gated by this setting.
+func (s *Store) IsStrictWordCountEnabled() bool {
+	val, _ := s.GetSetting(SettingWordCountStrictMode)
+	return val == "true"
+}
+
+// SetStrictWordCountEnabled toggles per-app word-count filtering.
+func (s *Store) SetStrictWordCountEnabled(enabled bool) error {
+	return s.SetSetting(SettingWordCountStrictMode, boolToString(enabled))
+}
+
+// GetWordCountAllowlist returns the configured allowlist of app bundle IDs.
+// Bundle IDs are stored newline-separated and returned in arrival order.
+func (s *Store) GetWordCountAllowlist() []string {
+	val, _ := s.GetSetting(SettingWordCountAllowlist)
+	return splitNewlineList(val)
+}
+
+// SetWordCountAllowlist replaces the entire allowlist.
+func (s *Store) SetWordCountAllowlist(bundleIDs []string) error {
+	return s.SetSetting(SettingWordCountAllowlist, joinNewlineList(bundleIDs))
+}
+
+// GetWordCountAppsSeen returns the list of bundle IDs the daemon has observed.
+// Drives the per-app allowlist UI.
+func (s *Store) GetWordCountAppsSeen() []string {
+	val, _ := s.GetSetting(SettingWordCountAppsSeen)
+	return splitNewlineList(val)
+}
+
+// RecordSeenApp appends a bundle ID to the apps-seen list iff not present.
+// Safe to call frequently — short-circuits if the ID is already known.
+func (s *Store) RecordSeenApp(bundleID string) error {
+	if bundleID == "" {
+		return nil
+	}
+	seen := s.GetWordCountAppsSeen()
+	for _, id := range seen {
+		if id == bundleID {
+			return nil
+		}
+	}
+	seen = append(seen, bundleID)
+	return s.SetSetting(SettingWordCountAppsSeen, joinNewlineList(seen))
+}
+
+func splitNewlineList(s string) []string {
+	if s == "" {
+		return nil
+	}
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			if start < i {
+				out = append(out, s[start:i])
+			}
+			start = i + 1
+		}
+	}
+	if start < len(s) {
+		out = append(out, s[start:])
+	}
+	return out
+}
+
+func joinNewlineList(items []string) string {
+	out := ""
+	for i, item := range items {
+		if i > 0 {
+			out += "\n"
+		}
+		out += item
+	}
+	return out
 }
 
 // IsShowKeyTypesEnabled returns whether key type breakdown is shown (default: false)

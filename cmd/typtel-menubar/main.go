@@ -111,10 +111,12 @@ import (
 	"unsafe"
 
 	"fyne.io/systray"
+	"github.com/aayushbajaj/typing-telemetry/internal/appfilter"
 	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
 	"github.com/aayushbajaj/typing-telemetry/internal/mousetracker"
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
+	"github.com/aayushbajaj/typing-telemetry/internal/wordcounter"
 	"github.com/aayushbajaj/typing-telemetry/pkg/stats"
 )
 
@@ -122,6 +124,9 @@ var (
 	store          *storage.Store
 	lastMenuTitle  string
 	menuTitleMutex sync.Mutex
+	// appFilter is shared between the keystroke loop and the settings UI so
+	// that toggling strict mode or editing the allowlist takes effect live.
+	appFilter = appfilter.New()
 )
 
 // Version is set at build time via ldflags: -X main.Version=$(VERSION)
@@ -238,19 +243,50 @@ func main() {
 	}
 	defer keylogger.Stop()
 
+	// Initialize per-app filter from persisted settings.
+	appFilter.SetAllowlist(store.GetWordCountAllowlist())
+	appFilter.SetEnabled(store.IsStrictWordCountEnabled())
+
 	// Process keystrokes in background
+	counter := wordcounter.New()
 	go func() {
-		for keycode := range keystrokeChan {
+		var lastSeenBundle string
+		for ev := range keystrokeChan {
 			// Check for odometer hotkey (uses system modifier state, not tracked)
-			if checkOdometerHotkey(keycode) {
+			if checkOdometerHotkey(ev.Keycode) {
 				toggleOdometer()
 				continue // Don't count hotkey as regular keystroke
 			}
 
-			if err := store.RecordKeystroke(keycode); err != nil {
+			// Record every app we observe so the settings UI can offer it
+			// in the allowlist picker. Only writes when the bundle changes.
+			if bundleID := appfilter.Frontmost(); bundleID != "" && bundleID != lastSeenBundle {
+				lastSeenBundle = bundleID
+				if err := store.RecordSeenApp(bundleID); err != nil {
+					log.Printf("Failed to record seen app: %v", err)
+				}
+			}
+
+			// Strict mode (opt-in): drop keystrokes from apps not on the
+			// allowlist. We drop the keystroke entirely — not just the word
+			// boundary — to match Feather's "this app's typing doesn't count"
+			// semantics.
+			if !appFilter.IsAllowed(lastSeenBundle) {
+				counter.Reset()
+				continue
+			}
+
+			if err := store.RecordKeystroke(ev.Keycode); err != nil {
 				log.Printf("Failed to record keystroke: %v", err)
 			}
-			if isWordBoundary(keycode) {
+
+			if counter.Observe(wordcounter.Event{
+				Keycode:   ev.Keycode,
+				CmdHeld:   ev.CmdHeld(),
+				CtrlHeld:  ev.CtrlHeld(),
+				OptHeld:   ev.OptHeld(),
+				ShiftHeld: ev.ShiftHeld(),
+			}) {
 				date := time.Now().Format("2006-01-02")
 				if err := store.IncrementWordCount(date); err != nil {
 					log.Printf("Failed to increment word count: %v", err)
@@ -533,6 +569,76 @@ func buildMenu() {
 
 	showKeyTypes := store.IsShowKeyTypesEnabled()
 	mShowKeyTypes = mSettings.AddSubMenuItemCheckbox("Show Key Types (Letters/Modifiers/Special)", "", showKeyTypes)
+
+	mSettings.AddSubMenuItem("", "").Disable() // Separator
+
+	// Word Counting section — controls strict-mode per-app filtering.
+	// (The smarter keystroke heuristics in wordcounter.Counter always apply.)
+	mWordCountLabel := mSettings.AddSubMenuItem("🎯 Word Counting:", "")
+	mWordCountLabel.Disable()
+
+	strictEnabled := store.IsStrictWordCountEnabled()
+	mWordStrict := mSettings.AddSubMenuItemCheckbox("Strict Mode (filter by app)", "Only count keystrokes in allowlisted apps", strictEnabled)
+	go func() {
+		for range mWordStrict.ClickedCh {
+			newState := !store.IsStrictWordCountEnabled()
+			if err := store.SetStrictWordCountEnabled(newState); err != nil {
+				log.Printf("Failed to save strict mode setting: %v", err)
+				continue
+			}
+			appFilter.SetEnabled(newState)
+			if newState {
+				mWordStrict.Check()
+			} else {
+				mWordStrict.Uncheck()
+			}
+		}
+	}()
+
+	// Allowed apps sub-menu: one checkbox per observed bundle ID.
+	mAllowedApps := mSettings.AddSubMenuItem("   Allowed Apps", "Pick which apps' typing counts in strict mode")
+	appsSeen := store.GetWordCountAppsSeen()
+	if len(appsSeen) == 0 {
+		hint := mAllowedApps.AddSubMenuItem("(no apps observed yet — type for a while)", "")
+		hint.Disable()
+	} else {
+		allowSet := map[string]bool{}
+		for _, id := range store.GetWordCountAllowlist() {
+			allowSet[id] = true
+		}
+		sort.Strings(appsSeen)
+		for _, bundleID := range appsSeen {
+			bundleID := bundleID // capture
+			item := mAllowedApps.AddSubMenuItemCheckbox(bundleID, "", allowSet[bundleID])
+			go func() {
+				for range item.ClickedCh {
+					current := store.GetWordCountAllowlist()
+					found := false
+					out := make([]string, 0, len(current)+1)
+					for _, id := range current {
+						if id == bundleID {
+							found = true
+							continue
+						}
+						out = append(out, id)
+					}
+					if !found {
+						out = append(out, bundleID)
+					}
+					if err := store.SetWordCountAllowlist(out); err != nil {
+						log.Printf("Failed to save allowlist: %v", err)
+						continue
+					}
+					appFilter.SetAllowlist(out)
+					if found {
+						item.Uncheck()
+					} else {
+						item.Check()
+					}
+				}
+			}()
+		}
+	}
 
 	mSettings.AddSubMenuItem("", "").Disable() // Separator
 
@@ -2794,16 +2900,3 @@ func getHeatmapColor(value, max int64) string {
 }
 
 type HourlyStats = storage.HourlyStats
-
-func isWordBoundary(keycode int) bool {
-	switch keycode {
-	case 49: // Space
-		return true
-	case 36: // Return/Enter
-		return true
-	case 48: // Tab
-		return true
-	default:
-		return false
-	}
-}
