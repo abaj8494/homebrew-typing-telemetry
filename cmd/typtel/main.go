@@ -23,6 +23,10 @@ var (
 	testFile      string
 	testWordCount int
 	testLanguage  string
+
+	// JSON output flag for `today` and `stats` (machine-readable surface
+	// consumed by other tools like macos-watchdog).
+	jsonOutput bool
 )
 
 var rootCmd = &cobra.Command{
@@ -38,6 +42,9 @@ var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show typing statistics",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if jsonOutput {
+			return runStatsJSON()
+		}
 		return showStats()
 	},
 }
@@ -46,6 +53,9 @@ var todayCmd = &cobra.Command{
 	Use:   "today",
 	Short: "Show today's keystroke count (for menu bar)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if jsonOutput {
+			return runTodayJSON()
+		}
 		return showToday()
 	},
 }
@@ -91,6 +101,9 @@ func init() {
 	testCmd.Flags().StringVarP(&testFile, "file", "f", "", "Path to text file with words/passages")
 	testCmd.Flags().IntVarP(&testWordCount, "words", "w", 25, "Number of words in the test")
 	testCmd.Flags().StringVarP(&testLanguage, "language", "l", "", "Language variant: us, au (saved as default)")
+
+	todayCmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit machine-readable JSON instead of text")
+	statsCmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit machine-readable JSON instead of text")
 
 	rootCmd.AddCommand(statsCmd)
 	rootCmd.AddCommand(todayCmd)
