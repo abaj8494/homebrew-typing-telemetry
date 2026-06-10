@@ -1,15 +1,13 @@
 class TypingTelemetry < Formula
-  desc "Keystroke and mouse telemetry for developers - track your daily typing and mouse movement"
+  desc "Keystroke, mouse-distance, and typing-speed telemetry for developers"
   homepage "https://github.com/abaj8494/typing-telemetry"
-  version "1.3.11"
+  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v1.414"
+  version "1.414"
   license "MIT"
-
-  # Install from GitHub repository
-  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v1.3.11"
   head "https://github.com/abaj8494/typing-telemetry.git", branch: "main"
 
-  depends_on :macos
   depends_on "go" => :build
+  depends_on :macos
 
   def install
     system "go", "mod", "download"
