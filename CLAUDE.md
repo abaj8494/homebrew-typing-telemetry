@@ -26,6 +26,7 @@ internal/mousetracker/      Mouse position + click tracker
 internal/inertia/           Synthetic key-repeat acceleration
 internal/wordcounter/       Stateful word-boundary detector (added v1.3.13)
 internal/appfilter/         NSWorkspace frontmost-app + per-app allowlist (added v1.3.13)
+internal/speedtracker/      Active-time + fastest-pace WPM tracker (added v1.4)
 internal/storage/           SQLite store + settings
 internal/tui/               Bubble Tea typing test
 pkg/stats/                  Pure functions for streaks / averages / peaks
@@ -91,6 +92,15 @@ no Apple Developer certificate is involved. The cask's `postflight` runs
   (`internal/keylogger/keylogger_darwin.go`) as `KeystrokeEvent{Keycode, Flags}`
   — read them via the helpers `CmdHeld()`, `CtrlHeld()`, `OptHeld()`,
   `ShiftHeld()`.
+- Typing speed (v1.4) is WPM measured against *active* typing time: idle gaps
+  between keystrokes over 2s are excluded (`internal/speedtracker`, mirrors
+  `wordcounter`'s pure/testable design). `daily_summary` carries `active_ms`
+  plus three `fastest_*_wpm` columns; period stats come from
+  `storage.GetSpeedAggregate` and `stats.AverageWPM`. The menubar batches
+  measurements in memory (`cmd/typtel-menubar/speed.go`) and flushes on the
+  stats ticker — do **not** write speed per keystroke. `IdleCapMs` is
+  duplicated in `internal/storage` (the one-time `BackfillActiveTime`) and must
+  stay in sync with `speedtracker.IdleCapMs`.
 
 ## Collaboration
 
@@ -109,3 +119,10 @@ to `macOS-watchdog`. Likely import points:
 `internal/wordcounter` (for `Counter`), `internal/appfilter` (for allowlist),
 and `internal/storage` (for `DailyStats`). Both packages were designed to be
 importable from an API layer without dragging in the menubar binary.
+
+Shared since v1.4 (typing speed): `internal/storage` gained the
+`daily_summary` speed columns, `SpeedAggregate`, `GetSpeedAggregate`,
+`AddActiveTime`, `UpdateFastest`, and `BackfillActiveTime`; `pkg/stats` gained
+`AverageWPM`; and `internal/speedtracker` is a new pure package. The watchdog
+API can read speed via `GetSpeedAggregate` + `AverageWPM` with no new storage
+work. `typtel stats --json` exposes a `speed` block over the same data.

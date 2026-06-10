@@ -11,6 +11,7 @@ import (
 
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
 	"github.com/aayushbajaj/typing-telemetry/internal/tui"
+	"github.com/aayushbajaj/typing-telemetry/pkg/stats"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/spf13/cobra"
 )
@@ -178,6 +179,12 @@ func showStats() error {
 	}
 	defer store.Close()
 
+	// Ensure historical active time exists so speed stats are meaningful even
+	// if the menubar hasn't run since upgrading. Guarded — runs at most once.
+	if err := store.BackfillActiveTime(); err != nil {
+		return fmt.Errorf("backfill active time: %w", err)
+	}
+
 	today, err := store.GetTodayStats()
 	if err != nil {
 		return fmt.Errorf("failed to get today's stats: %w", err)
@@ -205,7 +212,42 @@ func showStats() error {
 	fmt.Printf("This week: %s keystrokes (%s words)\n", formatNum(weekTotal), formatNum(weekWords))
 	fmt.Printf("Daily avg: %s keystrokes (%s words)\n", formatNum(weekTotal/7), formatNum(weekWords/7))
 
+	// Typing speed: today's average plus all-time average and fastest pace.
+	speedToday, err := store.GetSpeedAggregate(today.Date)
+	if err != nil {
+		return fmt.Errorf("failed to get speed stats: %w", err)
+	}
+	speedAll, err := store.GetSpeedAggregate("")
+	if err != nil {
+		return fmt.Errorf("failed to get speed stats: %w", err)
+	}
+	fmt.Printf("Speed:     %s today, %s all-time (fastest %s)\n",
+		formatWPM(stats.AverageWPM(speedToday.Words, speedToday.ActiveMs)),
+		formatWPM(stats.AverageWPM(speedAll.Words, speedAll.ActiveMs)),
+		formatWPM(bestFastest(speedAll)))
+
 	return nil
+}
+
+// formatWPM renders a words-per-minute value, with a dash before any pace has
+// been recorded.
+func formatWPM(wpm float64) string {
+	if wpm <= 0 {
+		return "-- WPM"
+	}
+	return fmt.Sprintf("%.0f WPM", wpm)
+}
+
+// bestFastest returns the highest of the three tracked fastest-pace metrics.
+func bestFastest(a storage.SpeedAggregate) float64 {
+	best := a.FastestBurstWPM
+	if a.FastestWindowWPM > best {
+		best = a.FastestWindowWPM
+	}
+	if a.FastestMinuteWPM > best {
+		best = a.FastestMinuteWPM
+	}
+	return best
 }
 
 func formatNum(n int64) string {

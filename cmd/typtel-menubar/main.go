@@ -182,6 +182,16 @@ var (
 	mAvgDailyWords      *systray.MenuItem
 	mAvgDailyClicks     *systray.MenuItem
 	mAvgDailyDistance   *systray.MenuItem
+	// Typing-speed submenu items
+	mSpeed          *systray.MenuItem
+	mSpeedAvgToday  *systray.MenuItem
+	mSpeedAvgWeek   *systray.MenuItem
+	mSpeedAvgMonth  *systray.MenuItem
+	mSpeedAvgYear   *systray.MenuItem
+	mSpeedAvgAll    *systray.MenuItem
+	mSpeedFastBurst *systray.MenuItem
+	mSpeedFastWin   *systray.MenuItem
+	mSpeedFastMin   *systray.MenuItem
 	// Odometer submenu items
 	mOdometer             *systray.MenuItem
 	mOdometerStatus       *systray.MenuItem
@@ -236,6 +246,12 @@ func main() {
 	}
 	defer store.Close()
 
+	// One-time backfill of historical active typing time from raw keystroke
+	// timestamps, so average-WPM has real history on first launch of v1.4.
+	if err := store.BackfillActiveTime(); err != nil {
+		log.Printf("Active-time backfill failed: %v", err)
+	}
+
 	// Start keylogger in background
 	keystrokeChan, err := keylogger.Start()
 	if err != nil {
@@ -280,6 +296,15 @@ func main() {
 				log.Printf("Failed to record keystroke: %v", err)
 			}
 
+			// Typing speed: credit active time (idle gaps auto-paused) and,
+			// on a completed word, fold in the fastest-pace candidates. Both
+			// are batched in speedAcc and flushed by the stats ticker.
+			now := time.Now()
+			date := now.Format("2006-01-02")
+			if ms := speedTracker.OnKeystroke(now); ms > 0 {
+				speedAcc.addActive(date, ms)
+			}
+
 			if counter.Observe(wordcounter.Event{
 				Keycode:   ev.Keycode,
 				CmdHeld:   ev.CmdHeld(),
@@ -287,10 +312,10 @@ func main() {
 				OptHeld:   ev.OptHeld(),
 				ShiftHeld: ev.ShiftHeld(),
 			}) {
-				date := time.Now().Format("2006-01-02")
 				if err := store.IncrementWordCount(date); err != nil {
 					log.Printf("Failed to increment word count: %v", err)
 				}
+				speedAcc.recordSample(date, speedTracker.OnWord(now))
 			}
 
 			// Update odometer if active
@@ -394,6 +419,7 @@ func onReady() {
 		defer ticker.Stop()
 
 		for range ticker.C {
+			speedAcc.flush(store)
 			updateMenuBarTitle()
 			updateStatsDisplay()
 		}
@@ -402,6 +428,10 @@ func onReady() {
 
 func onExit() {
 	log.Println("Systray exiting...")
+	// Persist any speed measurements still buffered in memory.
+	if store != nil {
+		speedAcc.flush(store)
+	}
 }
 
 func buildMenu() {
@@ -468,6 +498,33 @@ func buildMenu() {
 	mAvgDailyClicks.Disable()
 	mAvgDailyDistance = mAverages.AddSubMenuItem("   -- distance/day", "")
 	mAvgDailyDistance.Disable()
+
+	// Typing Speed submenu (WPM averages + Garmin-style fastest pace)
+	mSpeed = systray.AddMenuItem("⚡ Typing Speed", "Average typing speed and fastest pace")
+
+	mSpeedAvgHeader := mSpeed.AddSubMenuItem("Average WPM:", "")
+	mSpeedAvgHeader.Disable()
+	mSpeedAvgToday = mSpeed.AddSubMenuItem("   Today: -- WPM", "")
+	mSpeedAvgToday.Disable()
+	mSpeedAvgWeek = mSpeed.AddSubMenuItem("   This Week: -- WPM", "")
+	mSpeedAvgWeek.Disable()
+	mSpeedAvgMonth = mSpeed.AddSubMenuItem("   This Month: -- WPM", "")
+	mSpeedAvgMonth.Disable()
+	mSpeedAvgYear = mSpeed.AddSubMenuItem("   This Year: -- WPM", "")
+	mSpeedAvgYear.Disable()
+	mSpeedAvgAll = mSpeed.AddSubMenuItem("   All-Time: -- WPM", "")
+	mSpeedAvgAll.Disable()
+
+	mSpeed.AddSubMenuItem("", "").Disable() // Separator
+
+	mSpeedFastHeader := mSpeed.AddSubMenuItem("Fastest Pace (all-time):", "")
+	mSpeedFastHeader.Disable()
+	mSpeedFastBurst = mSpeed.AddSubMenuItem("   10-word burst: -- WPM", "Fastest 10 consecutive words")
+	mSpeedFastBurst.Disable()
+	mSpeedFastWin = mSpeed.AddSubMenuItem("   60-second: -- WPM", "Most words in any rolling 60s window")
+	mSpeedFastWin.Disable()
+	mSpeedFastMin = mSpeed.AddSubMenuItem("   Best minute: -- WPM", "Most words in a single clock-minute")
+	mSpeedFastMin.Disable()
 
 	// Odometer submenu
 	mOdometer = systray.AddMenuItem("⏱️ Odometer", "Track session metrics")
@@ -1121,8 +1178,37 @@ func updateStatsDisplay() {
 	mAvgDailyClicks.SetTitle(fmt.Sprintf("   %s clicks/day", formatAbsolute(int64(avgClicksDaily))))
 	mAvgDailyDistance.SetTitle(fmt.Sprintf("   %s/day", formatDistance(avgDistanceDaily)))
 
+	// Update typing-speed submenu
+	updateSpeedDisplay()
+
 	// Update leaderboard
 	updateLeaderboard()
+}
+
+// updateSpeedDisplay refreshes the ⚡ Typing Speed submenu: average WPM over
+// rolling windows (today / 7d / 30d / 365d / all-time) plus the all-time
+// fastest paces. Periods are rolling windows for consistency with the rest of
+// the menu (This Week is the trailing 7 days, etc.).
+func updateSpeedDisplay() {
+	now := time.Now()
+	setAvg := func(item *systray.MenuItem, label, since string) {
+		agg, err := store.GetSpeedAggregate(since)
+		if err != nil {
+			return
+		}
+		item.SetTitle(fmt.Sprintf("   %s: %s", label, formatWPM(stats.AverageWPM(agg.Words, agg.ActiveMs))))
+	}
+	setAvg(mSpeedAvgToday, "Today", now.Format("2006-01-02"))
+	setAvg(mSpeedAvgWeek, "This Week", now.AddDate(0, 0, -6).Format("2006-01-02"))
+	setAvg(mSpeedAvgMonth, "This Month", now.AddDate(0, 0, -29).Format("2006-01-02"))
+	setAvg(mSpeedAvgYear, "This Year", now.AddDate(0, 0, -364).Format("2006-01-02"))
+	setAvg(mSpeedAvgAll, "All-Time", "")
+
+	if all, err := store.GetSpeedAggregate(""); err == nil {
+		mSpeedFastBurst.SetTitle(fmt.Sprintf("   10-word burst: %s", formatWPM(all.FastestBurstWPM)))
+		mSpeedFastWin.SetTitle(fmt.Sprintf("   60-second: %s", formatWPM(all.FastestWindowWPM)))
+		mSpeedFastMin.SetTitle(fmt.Sprintf("   Best minute: %s", formatWPM(all.FastestMinuteWPM)))
+	}
 }
 
 func updateLeaderboard() {

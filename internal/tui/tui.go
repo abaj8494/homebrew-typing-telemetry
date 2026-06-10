@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
+	"github.com/aayushbajaj/typing-telemetry/pkg/stats"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -24,6 +25,8 @@ type Model struct {
 	todayStats         *storage.DailyStats
 	weekStats          []storage.DailyStats
 	hourlyStats        []storage.HourlyStats
+	speedToday         storage.SpeedAggregate
+	speedAll           storage.SpeedAggregate
 	width              int
 	height             int
 	err                error
@@ -32,10 +35,12 @@ type Model struct {
 }
 
 type statsMsg struct {
-	today  *storage.DailyStats
-	week   []storage.DailyStats
-	hourly []storage.HourlyStats
-	err    error
+	today      *storage.DailyStats
+	week       []storage.DailyStats
+	hourly     []storage.HourlyStats
+	speedToday storage.SpeedAggregate
+	speedAll   storage.SpeedAggregate
+	err        error
 }
 
 func New(store *storage.Store) Model {
@@ -62,7 +67,17 @@ func (m Model) fetchStats() tea.Msg {
 		return statsMsg{err: err}
 	}
 
-	return statsMsg{today: today, week: week, hourly: hourly}
+	speedToday, err := m.store.GetSpeedAggregate(today.Date)
+	if err != nil {
+		return statsMsg{err: err}
+	}
+
+	speedAll, err := m.store.GetSpeedAggregate("")
+	if err != nil {
+		return statsMsg{err: err}
+	}
+
+	return statsMsg{today: today, week: week, hourly: hourly, speedToday: speedToday, speedAll: speedAll}
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -92,6 +107,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.todayStats = msg.today
 			m.weekStats = msg.week
 			m.hourlyStats = msg.hourly
+			m.speedToday = msg.speedToday
+			m.speedAll = msg.speedAll
 		}
 	}
 
@@ -137,6 +154,29 @@ func (m Model) View() string {
 		statValueStyle.Render(formatNumber(weekTotal/7)),
 	)
 	b.WriteString(boxStyle.Render("This Week\n" + weekContent))
+	b.WriteString("\n\n")
+
+	// Typing speed: today's and all-time average WPM, plus the best fastest
+	// pace recorded across the three tracked methods.
+	avgToday := stats.AverageWPM(m.speedToday.Words, m.speedToday.ActiveMs)
+	avgAll := stats.AverageWPM(m.speedAll.Words, m.speedAll.ActiveMs)
+	fastest := m.speedAll.FastestBurstWPM
+	if m.speedAll.FastestWindowWPM > fastest {
+		fastest = m.speedAll.FastestWindowWPM
+	}
+	if m.speedAll.FastestMinuteWPM > fastest {
+		fastest = m.speedAll.FastestMinuteWPM
+	}
+	speedContent := fmt.Sprintf(
+		"%s %s\n%s %s\n%s %s",
+		statLabelStyle.Render("Today:"),
+		statValueStyle.Render(formatWPM(avgToday)),
+		statLabelStyle.Render("All-Time:"),
+		statValueStyle.Render(formatWPM(avgAll)),
+		statLabelStyle.Render("Fastest:"),
+		statValueStyle.Render(formatWPM(fastest)),
+	)
+	b.WriteString(boxStyle.Render("Typing Speed\n" + speedContent))
 	b.WriteString("\n\n")
 
 	// Hourly graph
@@ -236,4 +276,13 @@ func formatNumber(n int64) string {
 		return fmt.Sprintf("%.1fK", float64(n)/1000)
 	}
 	return fmt.Sprintf("%d", n)
+}
+
+// formatWPM renders a words-per-minute value, showing a dash until a pace has
+// been recorded.
+func formatWPM(wpm float64) string {
+	if wpm <= 0 {
+		return "--"
+	}
+	return fmt.Sprintf("%.0f WPM", wpm)
 }

@@ -5,6 +5,29 @@ import (
 	"time"
 )
 
+func TestAverageWPM(t *testing.T) {
+	tests := []struct {
+		name     string
+		words    int64
+		activeMs int64
+		expected float64
+	}{
+		{name: "no active time", words: 100, activeMs: 0, expected: 0},
+		{name: "negative active time", words: 100, activeMs: -5, expected: 0},
+		{name: "60 words in one minute", words: 60, activeMs: 60000, expected: 60},
+		{name: "30 words in 30 seconds", words: 30, activeMs: 30000, expected: 60},
+		{name: "no words", words: 0, activeMs: 60000, expected: 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := AverageWPM(tt.words, tt.activeMs); got != tt.expected {
+				t.Errorf("AverageWPM(%d, %d) = %v, want %v", tt.words, tt.activeMs, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestCalculateWeeklyAverage(t *testing.T) {
 	tests := []struct {
 		name     string

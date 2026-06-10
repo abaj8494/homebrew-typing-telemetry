@@ -120,6 +120,18 @@ func LongestStreak(days []DayData) int {
 	return longest
 }
 
+// AverageWPM returns words per minute given a word count and the active typing
+// time in milliseconds (idle gaps already auto-paused upstream). It is the
+// single source of truth for the average-WPM formula used by the menubar, the
+// TUI, and the JSON surface. Returns 0 when no active time has been recorded.
+func AverageWPM(words int64, activeMs int64) float64 {
+	if activeMs <= 0 {
+		return 0
+	}
+	minutes := float64(activeMs) / 60000.0
+	return float64(words) / minutes
+}
+
 func FindPeakHour(hourlyData []int64) (hour int, count int64) {
 	for h, c := range hourlyData {
 		if c > count {

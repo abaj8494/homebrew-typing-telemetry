@@ -22,6 +22,25 @@ type DailyStats struct {
 	Letters    int64 // a-z, A-Z
 	Modifiers  int64 // Shift, Ctrl, Alt/Option, Cmd
 	Special    int64 // Numbers, punctuation, function keys, etc.
+
+	// Typing-speed fields (added v1.4). ActiveMs is active typing time in
+	// milliseconds (idle gaps auto-paused); the Fastest*WPM fields are the
+	// best paces recorded that day. See internal/speedtracker.
+	ActiveMs         int64
+	FastestBurstWPM  float64
+	FastestWindowWPM float64
+	FastestMinuteWPM float64
+}
+
+// SpeedAggregate is a rolled-up speed summary over a date range: summed volume
+// plus the best pace seen in the range. Average WPM is derived from Words and
+// ActiveMs via stats.AverageWPM.
+type SpeedAggregate struct {
+	Words            int64
+	ActiveMs         int64
+	FastestBurstWPM  float64
+	FastestWindowWPM float64
+	FastestMinuteWPM float64
 }
 
 type HourlyStats struct {
@@ -164,6 +183,12 @@ func initSchema(db *sql.DB) error {
 	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN modifiers INTEGER DEFAULT 0")
 	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN special INTEGER DEFAULT 0")
 
+	// Typing-speed columns (migration for existing DBs, added v1.4)
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN active_ms INTEGER DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN fastest_burst_wpm REAL DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN fastest_window_wpm REAL DEFAULT 0")
+	_, _ = db.Exec("ALTER TABLE daily_summary ADD COLUMN fastest_minute_wpm REAL DEFAULT 0")
+
 	// Ensure odometer session row exists (singleton pattern)
 	_, _ = db.Exec("INSERT OR IGNORE INTO odometer_session (id, is_active) VALUES (1, 0)")
 
@@ -261,6 +286,121 @@ func (s *Store) IncrementWordCount(date string) error {
 	return err
 }
 
+// AddActiveTime credits deltaMs of active typing time to the given day. The
+// menubar batches these (rather than writing per keystroke) and flushes on its
+// stats ticker. A zero or negative delta is a no-op.
+func (s *Store) AddActiveTime(date string, deltaMs int64) error {
+	if deltaMs <= 0 {
+		return nil
+	}
+	_, err := s.db.Exec(`
+		INSERT INTO daily_summary (date, active_ms) VALUES (?, ?)
+		ON CONFLICT(date) DO UPDATE SET
+			active_ms = active_ms + ?,
+			updated_at = CURRENT_TIMESTAMP
+	`, date, deltaMs, deltaMs)
+	return err
+}
+
+// UpdateFastest records new fastest-pace candidates for the day, keeping the
+// maximum of the stored and supplied values for each metric. It is idempotent,
+// so flushing a running maximum repeatedly is safe. Non-positive values leave
+// the corresponding metric untouched.
+func (s *Store) UpdateFastest(date string, burst, window, minute float64) error {
+	_, err := s.db.Exec(`
+		INSERT INTO daily_summary (date, fastest_burst_wpm, fastest_window_wpm, fastest_minute_wpm)
+		VALUES (?, ?, ?, ?)
+		ON CONFLICT(date) DO UPDATE SET
+			fastest_burst_wpm  = MAX(fastest_burst_wpm, ?),
+			fastest_window_wpm = MAX(fastest_window_wpm, ?),
+			fastest_minute_wpm = MAX(fastest_minute_wpm, ?),
+			updated_at = CURRENT_TIMESTAMP
+	`, date, burst, window, minute, burst, window, minute)
+	return err
+}
+
+// GetSpeedAggregate rolls up speed stats for all days on or after sinceDate
+// (an empty sinceDate means all-time). Words and active time are summed; the
+// fastest paces are the maxima over the range.
+func (s *Store) GetSpeedAggregate(sinceDate string) (SpeedAggregate, error) {
+	var agg SpeedAggregate
+	query := `SELECT
+			COALESCE(SUM(words), 0),
+			COALESCE(SUM(active_ms), 0),
+			COALESCE(MAX(fastest_burst_wpm), 0),
+			COALESCE(MAX(fastest_window_wpm), 0),
+			COALESCE(MAX(fastest_minute_wpm), 0)
+		FROM daily_summary`
+	var row *sql.Row
+	if sinceDate == "" {
+		row = s.db.QueryRow(query)
+	} else {
+		row = s.db.QueryRow(query+" WHERE date >= ?", sinceDate)
+	}
+	err := row.Scan(&agg.Words, &agg.ActiveMs, &agg.FastestBurstWPM,
+		&agg.FastestWindowWPM, &agg.FastestMinuteWPM)
+	return agg, err
+}
+
+// settingBackfillDone marks that the one-time active-time backfill has run.
+const settingBackfillDone = "speed_backfill_done"
+
+// speedtrackerIdleCapMs mirrors speedtracker.IdleCapMs. It is duplicated here
+// (rather than imported) so the storage layer stays free of that dependency;
+// the two must agree for backfilled active time to match live measurement.
+const speedtrackerIdleCapMs = 2000
+
+// BackfillActiveTime reconstructs historical active typing time from the raw
+// keystrokes table for days that have no active_ms yet. It runs once (guarded
+// by a settings flag) so existing installs get meaningful average-WPM history
+// the first time they launch v1.4. Fastest-pace cannot be reconstructed —
+// per-word timing was never recorded — so only active_ms is backfilled.
+func (s *Store) BackfillActiveTime() error {
+	if done, _ := s.GetSetting(settingBackfillDone); done == "1" {
+		return nil
+	}
+
+	rows, err := s.db.Query("SELECT date, timestamp FROM keystrokes ORDER BY id")
+	if err != nil {
+		return err
+	}
+
+	// Sum capped inter-keystroke gaps per day. The go-sqlite3 driver returns
+	// the DATETIME column as a time.Time, so we scan it directly.
+	perDay := make(map[string]int64)
+	var haveLast bool
+	var lastTS time.Time
+	for rows.Next() {
+		var date string
+		var ts time.Time
+		if err := rows.Scan(&date, &ts); err != nil {
+			rows.Close()
+			return err
+		}
+		if haveLast {
+			delta := ts.Sub(lastTS).Milliseconds()
+			if delta > 0 && delta <= speedtrackerIdleCapMs {
+				perDay[date] += delta
+			}
+		}
+		lastTS = ts
+		haveLast = true
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+
+	for date, ms := range perDay {
+		if err := s.AddActiveTime(date, ms); err != nil {
+			return err
+		}
+	}
+
+	return s.SetSetting(settingBackfillDone, "1")
+}
+
 func (s *Store) GetTodayStats() (*DailyStats, error) {
 	date := time.Now().Format("2006-01-02")
 	return s.GetDayStats(date)
@@ -271,9 +411,14 @@ func (s *Store) GetDayStats(date string) (*DailyStats, error) {
 	stats.Date = date
 
 	err := s.db.QueryRow(
-		"SELECT COALESCE(keystrokes, 0), COALESCE(words, 0), COALESCE(letters, 0), COALESCE(modifiers, 0), COALESCE(special, 0) FROM daily_summary WHERE date = ?",
+		`SELECT COALESCE(keystrokes, 0), COALESCE(words, 0), COALESCE(letters, 0),
+			COALESCE(modifiers, 0), COALESCE(special, 0), COALESCE(active_ms, 0),
+			COALESCE(fastest_burst_wpm, 0), COALESCE(fastest_window_wpm, 0),
+			COALESCE(fastest_minute_wpm, 0)
+		FROM daily_summary WHERE date = ?`,
 		date,
-	).Scan(&stats.Keystrokes, &stats.Words, &stats.Letters, &stats.Modifiers, &stats.Special)
+	).Scan(&stats.Keystrokes, &stats.Words, &stats.Letters, &stats.Modifiers, &stats.Special,
+		&stats.ActiveMs, &stats.FastestBurstWPM, &stats.FastestWindowWPM, &stats.FastestMinuteWPM)
 
 	if err == sql.ErrNoRows {
 		return &DailyStats{Date: date, Keystrokes: 0, Words: 0, Letters: 0, Modifiers: 0, Special: 0}, nil
