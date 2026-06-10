@@ -35,3 +35,7 @@ vendor/
 # Local data (don't commit user's keystroke data)
 *.db
 logs/
+
+# Release artifacts (published to GitHub Releases, not committed)
+Typtel-*.zip
+Typtel-*.zip.sha256

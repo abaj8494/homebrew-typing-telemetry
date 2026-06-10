@@ -12,6 +12,7 @@ import (
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/guptarohit/asciigraph"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -144,9 +145,16 @@ type TypingTestModel struct {
 	showCustomPanel   bool           // Show custom text panel
 	customTextInput   string         // Buffer for custom text input
 	inCustomTextInput bool           // Whether we're inputting custom text
+	rawInputCnt       int            // Total keystrokes entered (never reduced) — for accuracy/CPM
+	wpmEachSecond     []float64      // Net WPM sampled once per second, for the results graph
 }
 
 type tickMsg time.Time
+
+// secondTick schedules a 1s sample for the live WPM-over-time graph.
+func secondTick() tea.Cmd {
+	return tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
 
 func NewTypingTest(sourceFile string, wordCount int) TypingTestModel {
 	return NewTypingTestWithStore(sourceFile, wordCount, nil)
@@ -447,6 +455,73 @@ func (m *TypingTestModel) resetTest() {
 	m.errors = 0
 	m.resultRecorded = false
 	m.lastWPM = 0
+	m.rawInputCnt = 0
+	m.wpmEachSecond = nil
+}
+
+// uncorrectedErrors counts characters in the final typed string that do not
+// match the target — the errors that survived to the end of the test. These
+// (not the cumulative keystroke mistakes) are what the net-WPM penalty uses.
+func (m TypingTestModel) uncorrectedErrors() int {
+	errs := 0
+	n := len(m.typed)
+	if len(m.targetText) < n {
+		n = len(m.targetText)
+	}
+	for i := 0; i < n; i++ {
+		if m.typed[i] != m.targetText[i] {
+			errs++
+		}
+	}
+	if len(m.typed) > len(m.targetText) {
+		errs += len(m.typed) - len(m.targetText)
+	}
+	return errs
+}
+
+// rawWPM is gross words-per-minute: (chars typed / 5) per minute, no penalty.
+// This is what speedtypingonline.com calls "gross WPM".
+func (m TypingTestModel) rawWPM(elapsedMinutes float64) float64 {
+	if elapsedMinutes <= 0 {
+		return 0
+	}
+	return (float64(len(m.typed)) / 5.0) / elapsedMinutes
+}
+
+// netWPM penalises uncorrected errors: gross WPM minus one word per
+// uncorrected error per minute, floored at zero. This is the headline figure,
+// matching the standard typing-test equations (and typioca's normalised WPM).
+func (m TypingTestModel) netWPM(elapsedMinutes float64) float64 {
+	if elapsedMinutes <= 0 {
+		return 0
+	}
+	net := m.rawWPM(elapsedMinutes) - float64(m.uncorrectedErrors())/elapsedMinutes
+	if net < 0 {
+		return 0
+	}
+	return net
+}
+
+// accuracy is the share of keystrokes that were correct over the whole test,
+// counting every mistake ever made (even corrected ones) against total input.
+func (m TypingTestModel) accuracy() float64 {
+	if m.rawInputCnt == 0 {
+		return 100.0
+	}
+	acc := 100.0 - float64(m.errors*100)/float64(m.rawInputCnt)
+	if acc < 0 {
+		return 0
+	}
+	return acc
+}
+
+// cpm is gross characters-per-minute of total input (effort, including
+// corrected keystrokes), matching typioca's CPM.
+func (m TypingTestModel) cpm(elapsedMinutes float64) int {
+	if elapsedMinutes <= 0 {
+		return 0
+	}
+	return int(float64(m.rawInputCnt) / elapsedMinutes)
 }
 
 // recordTestResult records the current test result to statistics
@@ -455,9 +530,8 @@ func (m *TypingTestModel) recordTestResult() {
 		return
 	}
 
-	duration := m.endTime.Sub(m.startTime).Seconds()
-	wordsTyped := float64(len(m.targetText)) / 5.0
-	wpm := (wordsTyped / duration) * 60
+	elapsedMinutes := m.endTime.Sub(m.startTime).Minutes()
+	wpm := m.netWPM(elapsedMinutes)
 
 	// Update local stats
 	if wpm > m.personalBest {
@@ -679,6 +753,13 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.resetTest()
 			return m, nil
 
+		case tea.KeyCtrlW:
+			// Ctrl+W: delete the previous word (matches typioca / shell readline).
+			if len(m.typed) > 0 && m.state == StateRunning {
+				m.typed = deleteLastWord(m.typed)
+			}
+			return m, nil
+
 		case tea.KeyBackspace:
 			if len(m.typed) > 0 && m.state == StateRunning {
 				if msg.Alt {
@@ -704,6 +785,7 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// If custom text with newlines, Enter types a newline
 			if m.state == StateRunning && m.options.TestType == "custom" && strings.Contains(m.targetText, "\n") {
 				m.typed += "\n"
+				m.rawInputCnt++
 				// Check if character is wrong
 				if len(m.typed) <= len(m.targetText) {
 					if m.typed[len(m.typed)-1] != m.targetText[len(m.typed)-1] {
@@ -726,6 +808,7 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.state == StateReady && m.options.TestType == "custom" && strings.Contains(m.targetText, "\n") {
 				m.state = StateRunning
 				m.startTime = time.Now()
+				return m, secondTick()
 			}
 			return m, nil
 
@@ -735,13 +818,16 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				char = " "
 			}
 
+			startedNow := false
 			if m.state == StateReady {
 				m.state = StateRunning
 				m.startTime = time.Now()
+				startedNow = true
 			}
 
 			if m.state == StateRunning {
 				m.typed += char
+				m.rawInputCnt++
 
 				// Check if character is wrong (only count errors for target length)
 				if len(m.typed) <= len(m.targetText) {
@@ -765,8 +851,20 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			if startedNow {
+				return m, secondTick()
+			}
 			return m, nil
 		}
+
+	case tickMsg:
+		// Sample net WPM once per second while running, for the results graph.
+		if m.state == StateRunning {
+			elapsed := time.Since(m.startTime).Minutes()
+			m.wpmEachSecond = append(m.wpmEachSecond, m.netWPM(elapsed))
+			return m, secondTick()
+		}
+		return m, nil
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -1020,30 +1118,13 @@ func (m TypingTestModel) View() string {
 	if m.state == StateRunning {
 		testContent.WriteString("\n\n")
 		if m.options.LiveWPM {
-			elapsed := time.Since(m.startTime).Seconds()
-			wordsTyped := float64(len(m.typed)) / 5.0
-			wpm := 0.0
-			if elapsed > 0 {
-				wpm = (wordsTyped / elapsed) * 60
-			}
-
-			accuracy := 100.0
-			if len(m.typed) > 0 {
-				correctChars := 0
-				for i := 0; i < len(m.typed) && i < len(m.targetText); i++ {
-					if m.typed[i] == m.targetText[i] {
-						correctChars++
-					}
-				}
-				accuracy = float64(correctChars) / float64(len(m.typed)) * 100
-			}
-
+			elapsedMin := time.Since(m.startTime).Minutes()
 			testContent.WriteString(fmt.Sprintf(
 				"%s %.0f  %s %.0f%%",
 				resultLabelStyle.Render("WPM:"),
-				wpm,
+				m.netWPM(elapsedMin),
 				resultLabelStyle.Render("Acc:"),
-				accuracy,
+				m.accuracy(),
 			))
 		} else {
 			// Empty line to maintain box height when LiveWPM is off
@@ -1074,7 +1155,7 @@ func (m TypingTestModel) View() string {
 		if m.state == StateFinished {
 			b.WriteString(helpStyle.Render("enter: new test • tab: restart • esc: options • ↑: menu • ctrl+c: quit"))
 		} else {
-			b.WriteString(helpStyle.Render("tab: restart • esc: options • ↑: menu • ctrl+c: quit"))
+			b.WriteString(helpStyle.Render("tab: restart • esc: options • ↑: menu • ctrl+w: del word • ctrl+c: quit"))
 		}
 	}
 
@@ -1560,11 +1641,12 @@ func (m TypingTestModel) renderCustomTextWithNewlines(maxWidth int, pacePos int)
 
 func (m TypingTestModel) renderResults() string {
 	duration := m.endTime.Sub(m.startTime).Seconds()
-	wordsTyped := float64(len(m.targetText)) / 5.0
-	wpm := (wordsTyped / duration) * 60
+	elapsedMin := m.endTime.Sub(m.startTime).Minutes()
 
-	correctChars := len(m.targetText) - m.errors
-	accuracy := float64(correctChars) / float64(len(m.targetText)) * 100
+	wpm := m.netWPM(elapsedMin)
+	rawWpm := m.rawWPM(elapsedMin)
+	accuracy := m.accuracy()
+	cpm := m.cpm(elapsedMin)
 
 	pbIndicator := ""
 	if wpm > m.personalBest && m.personalBest > 0 {
@@ -1572,18 +1654,56 @@ func (m TypingTestModel) renderResults() string {
 	}
 
 	results := fmt.Sprintf(
-		"%s%s\n\n%s %s\n%s %s\n%s %s\n%s %s",
+		"%s%s\n\n%s %s   %s %s\n%s %s   %s %s\n%s %s   %s %s",
 		resultTitleStyle.Render("Test Complete!"),
 		pbIndicator,
 		resultLabelStyle.Render("WPM:"),
 		resultValueStyle.Render(fmt.Sprintf("%.1f", wpm)),
+		resultLabelStyle.Render("Raw:"),
+		resultValueStyle.Render(fmt.Sprintf("%.1f", rawWpm)),
 		resultLabelStyle.Render("Accuracy:"),
 		resultValueStyle.Render(fmt.Sprintf("%.1f%%", accuracy)),
+		resultLabelStyle.Render("CPM:"),
+		resultValueStyle.Render(fmt.Sprintf("%d", cpm)),
 		resultLabelStyle.Render("Time:"),
 		resultValueStyle.Render(fmt.Sprintf("%.1fs", duration)),
-		resultLabelStyle.Render("Characters:"),
+		resultLabelStyle.Render("Chars:"),
 		resultValueStyle.Render(fmt.Sprintf("%d", len(m.targetText))),
 	)
 
+	// WPM-over-time graph (typioca-style), shown when we have enough samples.
+	if graph := m.renderWPMGraph(); graph != "" {
+		results += "\n\n" + graph
+	}
+
 	return statsBoxStyle.Render(results)
+}
+
+// renderWPMGraph draws a small WPM-over-time line chart from the per-second
+// samples collected during the test.
+func (m TypingTestModel) renderWPMGraph() string {
+	// Append the final WPM so the line lands on the result.
+	data := append(append([]float64{}, m.wpmEachSecond...), m.netWPM(m.endTime.Sub(m.startTime).Minutes()))
+	if len(data) < 3 {
+		return "" // too few points to be meaningful
+	}
+
+	width := 40
+	if m.width > 0 {
+		if w := m.width - 24; w < width {
+			width = w
+		}
+	}
+	if width < 10 {
+		return ""
+	}
+
+	graph := asciigraph.Plot(
+		data,
+		asciigraph.Height(5),
+		asciigraph.Width(width),
+		asciigraph.Precision(0),
+		asciigraph.Caption("WPM over time"),
+	)
+	return graph
 }

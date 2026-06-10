@@ -1618,3 +1618,45 @@ func TestViewCustomPanel(t *testing.T) {
 		t.Error("Expected 'Custom' in custom panel view")
 	}
 }
+
+func TestWPMMath(t *testing.T) {
+	// 50 typed chars over 0.5 min => gross WPM = (50/5)/0.5 = 20.
+	m := TypingTestModel{
+		targetText:  strings.Repeat("a", 50),
+		typed:       strings.Repeat("a", 50),
+		rawInputCnt: 50,
+		errors:      0,
+	}
+	if got := m.rawWPM(0.5); got != 20 {
+		t.Errorf("rawWPM: want 20, got %.2f", got)
+	}
+	// No uncorrected errors => net == raw.
+	if got := m.netWPM(0.5); got != 20 {
+		t.Errorf("netWPM (clean): want 20, got %.2f", got)
+	}
+	if got := m.accuracy(); got != 100 {
+		t.Errorf("accuracy (clean): want 100, got %.2f", got)
+	}
+
+	// 2 uncorrected errors over 0.5 min => net = 20 - 2/0.5 = 16.
+	m2 := TypingTestModel{
+		targetText:  "aaaaa aaaaa",
+		typed:       "aaaXa aaaaX", // 2 mismatches
+		rawInputCnt: 13,            // 11 chars + 2 corrected keystrokes of effort
+		errors:      4,             // cumulative wrong keystrokes
+	}
+	netExpected := m2.rawWPM(0.5) - 2.0/0.5
+	if got := m2.netWPM(0.5); got != netExpected {
+		t.Errorf("netWPM (errors): want %.2f, got %.2f", netExpected, got)
+	}
+	// accuracy = 100 - (4*100/13) ≈ 69.23
+	if got := m2.accuracy(); got < 69.2 || got > 69.3 {
+		t.Errorf("accuracy (errors): want ~69.23, got %.2f", got)
+	}
+
+	// Net WPM never goes negative.
+	m3 := TypingTestModel{targetText: "aa", typed: "XX", rawInputCnt: 2, errors: 2}
+	if got := m3.netWPM(0.001); got != 0 {
+		t.Errorf("netWPM floor: want 0, got %.2f", got)
+	}
+}

@@ -83,9 +83,14 @@ no Apple Developer certificate is involved. The cask's `postflight` runs
   for the printable subset. `internal/storage.ClassifyKeycode` covers the
   letter/modifier/special trichotomy.
 - Words are counted via `internal/wordcounter.Counter.Observe(Event)` — a
-  stateful boundary detector that requires content before a space/return/tab
-  fires, treats Cmd/Ctrl-held keys as shortcuts, and rolls back on backspace.
-  Do **not** revive the old `isWordBoundary` heuristic.
+  boundary detector that mirrors Christian Tietze's WordCounter (the reference
+  app, reverse-engineered from its binary): a word is a maximal run of
+  non-whitespace characters, committed on the next Space/Return/Tab. It carries
+  a single `typingWord` bool (any printable arms it), treats Cmd/Ctrl-held keys
+  as shortcuts, and **backspace is a no-op**. Do **not** revive the old
+  `isWordBoundary` heuristic, and do **not** reintroduce per-character
+  bookkeeping or backspace rollback — the rollback (pre-v1.414) made typtel read
+  ~5% below WordCounter because ordinary typo correction erased real words.
 - Per-app filtering uses `internal/appfilter.Frontmost()` (NSWorkspace bundle
   ID) gated by an allowlist persisted in settings. Disabled by default.
 - Modifier flags travel with keystroke events from the C callback

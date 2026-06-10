@@ -1,10 +1,20 @@
 // Package wordcounter detects completed words from a keystroke stream.
 //
-// The counter is intentionally stricter than the previous space/return/tab
-// heuristic: a word boundary only completes a word when at least one printable
-// character has been typed since the previous boundary, modifier-held key
-// presses (Cmd, Ctrl) are treated as shortcuts and ignored, and backspace
-// rolls back the in-progress character count.
+// The model mirrors the reference behaviour of Christian Tietze's WordCounter
+// (de.christiantietze.WordCounter), reverse-engineered from its binary: a
+// "word" is a maximal run of non-whitespace characters, committed when the
+// next whitespace (Space / Return / Tab) arrives. Concretely:
+//
+//   - any printable character "arms" a word in progress (isTypingWord = true);
+//   - a Space / Return / Tab commits the armed word and disarms;
+//   - Cmd / Ctrl-held presses are shortcuts and are ignored entirely;
+//   - Backspace does NOT roll back. WordCounter never un-counts characters, and
+//     an earlier rollback heuristic here made typtel read ~5% below WordCounter
+//     because ordinary typo correction erased words that were actually typed.
+//
+// This is the classic `wc -w` definition (whitespace-delimited tokens), which
+// is what users — and the tools they compare against — expect. Do not reintroduce
+// per-character bookkeeping or backspace rollback.
 package wordcounter
 
 // macOS virtual keycodes used by the counter.
@@ -66,7 +76,9 @@ const (
 // Counter is a stateful word-boundary detector.
 // Not goroutine-safe — owned by the single keystroke goroutine.
 type Counter struct {
-	contentChars int
+	// typingWord is true once a printable character has been seen since the
+	// last committed boundary. It mirrors WordCounter's isTypingWord flag.
+	typingWord bool
 }
 
 // New returns a fresh Counter.
@@ -94,27 +106,26 @@ func (c *Counter) Observe(e Event) bool {
 
 	switch e.Keycode {
 	case kcDelete, kcForwardDel:
-		if c.contentChars > 0 {
-			c.contentChars--
-		}
+		// Backspace is intentionally a no-op: WordCounter never rolls back a
+		// word in progress, and doing so here made typtel undercount.
 		return false
 	case kcSpace, kcReturn, kcTab:
-		if c.contentChars > 0 {
-			c.contentChars = 0
+		if c.typingWord {
+			c.typingWord = false
 			return true
 		}
 		return false
 	}
 
 	if isContentKey(e.Keycode) {
-		c.contentChars++
+		c.typingWord = true
 	}
 	return false
 }
 
 // Reset clears in-progress state. Intended for tests and for "boundary"
 // events like app switches when strict mode is enabled.
-func (c *Counter) Reset() { c.contentChars = 0 }
+func (c *Counter) Reset() { c.typingWord = false }
 
 // isContentKey reports whether a keycode represents a printable character
 // that should grow the in-progress word.

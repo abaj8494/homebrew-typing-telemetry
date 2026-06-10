@@ -82,17 +82,27 @@ func TestCmdSDoesNotPolluteContent(t *testing.T) {
 	}
 }
 
-func TestBackspacesFullClear(t *testing.T) {
-	// h i BACKSPACE BACKSPACE SPACE -> 0
-	if got := run(t, keys(kcH, kcI, kcDelete, kcDelete, kcSpace)); got != 0 {
-		t.Fatalf("want 0, got %d", got)
+func TestBackspaceDoesNotUncountWord(t *testing.T) {
+	// h i BACKSPACE BACKSPACE SPACE -> 1
+	// WordCounter never rolls back: once a word is armed, the trailing space
+	// commits it regardless of how much was backspaced. (Old behaviour: 0.)
+	if got := run(t, keys(kcH, kcI, kcDelete, kcDelete, kcSpace)); got != 1 {
+		t.Fatalf("want 1, got %d", got)
 	}
 }
 
-func TestBackspacesPartial(t *testing.T) {
-	// h e l l o BACKSPACE SPACE -> still 1 (we retain "hell")
+func TestBackspacePartialStillCounts(t *testing.T) {
+	// h e l l o BACKSPACE SPACE -> still 1
 	if got := run(t, keys(kcH, kcE, kcL, kcL, kcO, kcDelete, kcSpace)); got != 1 {
 		t.Fatalf("want 1, got %d", got)
+	}
+}
+
+func TestLoneBackspaceThenSpaceDoesNotCount(t *testing.T) {
+	// BACKSPACE SPACE with no content typed -> 0
+	// Backspace is a no-op, so it must not arm a phantom word.
+	if got := run(t, keys(kcDelete, kcSpace)); got != 0 {
+		t.Fatalf("want 0, got %d", got)
 	}
 }
 
