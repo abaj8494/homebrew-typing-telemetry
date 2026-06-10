@@ -19,6 +19,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -59,3 +61,22 @@ jobs:
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # The cask downloads THIS artifact, so the cask sha256 must match the zip
+      # built here — not whatever was pinned manually before the tag was pushed.
+      # Auto-pin it to main so a stale sha can never block `brew upgrade` again.
+      - name: Pin cask sha256 to the built artifact
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          SHA=$(shasum -a 256 "build/Typtel-${VERSION}.zip" | awk '{print $1}')
+          echo "Built artifact sha256: ${SHA}"
+          git checkout main
+          perl -pi -e "s/sha256 \"[a-f0-9]{64}\"/sha256 \"${SHA}\"/" Casks/typtel.rb
+          if git diff --quiet -- Casks/typtel.rb; then
+            echo "Cask sha256 already matches the artifact; nothing to do."
+          else
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git commit -m "ci: pin cask sha256 to v${VERSION} artifact [skip ci]" -- Casks/typtel.rb
+            git push origin HEAD:main
+          fi

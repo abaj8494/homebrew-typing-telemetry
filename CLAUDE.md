@@ -52,25 +52,32 @@ are darwin-only and tested via the consuming code paths.
 
 ## Release flow
 
-The cask is hosted at `abaj8494/homebrew-typing-telemetry`. The binary release
-(the `.zip`) is published as a GitHub Release on **that** repo (not on
-`typing-telemetry`).
+`abaj8494/typing-telemetry` and `abaj8494/homebrew-typing-telemetry` are the
+**same GitHub repo** (the latter is a prior name kept as a redirect). So pushing
+to `origin` updates both, the cask at `Casks/typtel.rb` is the one `brew` reads,
+and a release/tag exists once under both URLs. Releases are built by CI
+(`.github/workflows/release.yml`) on tag push — **do not build/zip/`gh release
+create` by hand**; CI rebuilds the artifact and would overwrite a hand-uploaded
+zip, leaving any manually-pinned `sha256` stale (the classic `brew upgrade`
+"SHA-256 mismatch"). Versions track the digits of √2 — see
+[[typtel-version-scheme]].
 
 Standard sequence:
 
-1. Bump `VERSION?=` in `Makefile`.
-2. Bump `version` in `Casks/typtel.rb`. Leave the `sha256` line as the old
-   value temporarily — it will be replaced after the build.
+1. Bump `VERSION?=` in `Makefile` (next √2 prefix, e.g. 1.4142).
+2. Bump `version` in `Casks/typtel.rb`. Leave `sha256` as-is — CI overwrites it.
 3. Commit the feature plus the version bumps in **one** commit.
-4. `git tag -a vX.Y.Z` with release-note-style annotation.
-5. `make app VERSION=X.Y.Z` to produce `build/Typtel.app`.
-6. `(cd build && zip -r ../Typtel-X.Y.Z.zip Typtel.app)`.
-7. `shasum -a 256 Typtel-X.Y.Z.zip > Typtel-X.Y.Z.zip.sha256`.
-8. Update `Casks/typtel.rb` `sha256` line; second commit:
-   `fix: update cask SHA256 to match GitHub release for vX.Y.Z`.
-9. `git push origin main && git push origin vX.Y.Z`.
-10. `gh release create vX.Y.Z --repo abaj8494/homebrew-typing-telemetry
-    Typtel-X.Y.Z.zip Typtel-X.Y.Z.zip.sha256 --title "vX.Y.Z" --notes "…"`.
+4. `git tag -a vX -m "…"` with a release-note-style annotation.
+5. `git push origin main && git push origin vX`.
+6. Wait for the **Release** workflow to finish (~2-3 min). It builds the app,
+   publishes the GitHub Release with `Typtel-X.zip`, computes that zip's sha256,
+   and commits `ci: pin cask sha256 to vX artifact [skip ci]` to `main`. After
+   that commit lands, `brew update && brew upgrade --cask typtel` works.
+
+There is a transient window between the tag push and CI's sha-pin commit where
+the cask sha is stale; just wait for the CI commit before upgrading. The CLI
+formula (`Formula/typing-telemetry.rb`) is separate — bump its `version`/`tag`
+manually when releasing the CLI, and keep it passing `brew style`.
 
 The app is **ad-hoc signed** (`codesign --sign -` via the Go linker default);
 no Apple Developer certificate is involved. The cask's `postflight` runs
