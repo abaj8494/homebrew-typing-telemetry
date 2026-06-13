@@ -3,7 +3,7 @@
 BINARY_NAME=typtel
 MENUBAR_NAME=typtel-menubar
 APP_NAME=Typtel.app
-VERSION?=1.42
+VERSION?=1.43
 BUILD_DIR=build
 PREFIX?=/usr/local
 

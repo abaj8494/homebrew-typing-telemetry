@@ -203,6 +203,10 @@ var (
 	// appFilter is shared between the keystroke loop and the settings UI so
 	// that toggling strict mode or editing the allowlist takes effect live.
 	appFilter = appfilter.New()
+	// singletonLock holds the flock'd lockfile open for the process lifetime.
+	// It must stay referenced so the fd isn't closed (closing releases the
+	// lock); see acquireSingletonLock.
+	singletonLock *os.File
 )
 
 // Version is set at build time via ldflags: -X main.Version=$(VERSION)
@@ -308,6 +312,17 @@ func main() {
 	log.SetOutput(logFile)
 
 	log.Println("Starting typtel menu bar app...")
+
+	// Enforce a single running instance. A LaunchAgent-started daemon plus a
+	// manual launch (or a leftover process after make install-app) otherwise
+	// show two menu-bar icons and open the DB twice. First instance wins; a
+	// duplicate exits quietly before touching storage or the keylogger.
+	if ok, err := acquireSingletonLock(); err != nil {
+		log.Printf("Singleton lock failed, continuing without it: %v", err)
+	} else if !ok {
+		log.Println("Another typtel menu bar instance is already running; exiting.")
+		os.Exit(0)
+	}
 
 	// Check accessibility permissions
 	if !keylogger.CheckAccessibilityPermissions() {
@@ -1626,6 +1641,37 @@ func getLogDir() (string, error) {
 		return "", err
 	}
 	return logDir, nil
+}
+
+// acquireSingletonLock takes an exclusive, non-blocking flock on a lockfile in
+// the data dir so only one menu-bar instance ever runs — otherwise a daemon
+// (LaunchAgent) plus a manual launch leave two icons in the menu bar. It returns
+// true when this process won the lock; false means another instance already
+// holds it and the caller should exit. The lock is held for the process lifetime
+// via the package-level singletonLock fd and is released automatically by the OS
+// on exit or crash, so there is no stale-lock to clean up.
+func acquireSingletonLock() (bool, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false, err
+	}
+	dir := filepath.Join(home, ".local", "share", "typtel")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return false, err
+	}
+	f, err := os.OpenFile(filepath.Join(dir, "menubar.lock"), os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return false, err
+	}
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		f.Close()
+		if err == syscall.EWOULDBLOCK {
+			return false, nil // another instance holds the lock
+		}
+		return false, err
+	}
+	singletonLock = f // keep open for the process lifetime
+	return true, nil
 }
 
 func formatAbsolute(n int64) string {
