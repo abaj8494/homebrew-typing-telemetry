@@ -1,8 +1,8 @@
 class TypingTelemetry < Formula
   desc "Keystroke, mouse-distance, and typing-speed telemetry for developers"
   homepage "https://github.com/abaj8494/typing-telemetry"
-  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v1.414"
-  version "1.414"
+  url "https://github.com/abaj8494/typing-telemetry.git", tag: "v1.44"
+  version "1.44"
   license "MIT"
   head "https://github.com/abaj8494/typing-telemetry.git", branch: "main"
 

@@ -226,3 +226,53 @@ func TestCRUDHappyPath(t *testing.T) {
 		t.Fatalf("expected no devices after delete, got %+v", infos)
 	}
 }
+
+func TestGetSelfDays(t *testing.T) {
+	srv, store := newTestServer(t, nil)
+	url := srv.URL + "/v1/self/days"
+
+	// Requires auth like every non-health route.
+	resp := do(t, http.MethodGet, url, "", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("no-token status = %d, want 401", resp.StatusCode)
+	}
+
+	// A malformed since is rejected.
+	resp = do(t, http.MethodGet, url+"?since=2026-6-1", testToken, nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad-since status = %d, want 400", resp.StatusCode)
+	}
+
+	// Empty before any local typing.
+	resp = do(t, http.MethodGet, url, testToken, nil)
+	var days []storage.DeviceDay
+	if err := json.NewDecoder(resp.Body).Decode(&days); err != nil {
+		t.Fatalf("decode empty: %v", err)
+	}
+	resp.Body.Close()
+	if len(days) != 0 {
+		t.Fatalf("expected no self days, got %+v", days)
+	}
+
+	// Seed the Mac's own daily_summary via the local capture path, then it
+	// should surface as a self day with keystrokes > 0.
+	for i := 0; i < 5; i++ {
+		if err := store.RecordKeystroke(0); err != nil { // 'A'
+			t.Fatalf("RecordKeystroke: %v", err)
+		}
+	}
+	resp = do(t, http.MethodGet, url, testToken, nil)
+	days = nil
+	if err := json.NewDecoder(resp.Body).Decode(&days); err != nil {
+		t.Fatalf("decode seeded: %v", err)
+	}
+	resp.Body.Close()
+	if len(days) != 1 {
+		t.Fatalf("expected 1 self day, got %d: %+v", len(days), days)
+	}
+	if days[0].Keystrokes != 5 {
+		t.Fatalf("self day keystrokes = %d, want 5", days[0].Keystrokes)
+	}
+}

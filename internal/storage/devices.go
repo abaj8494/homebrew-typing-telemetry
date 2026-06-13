@@ -127,6 +127,39 @@ func (s *Store) GetDeviceDays(deviceID, sinceDate string) ([]DeviceDay, error) {
 	return out, rows.Err()
 }
 
+// GetSelfDays returns THIS Mac's own daily aggregates (from daily_summary, the
+// local capture path) shaped as DeviceDay rows, on or after sinceDate (empty =
+// all), newest first. Empty days (no keystrokes) are skipped. This is what the
+// ingest API's GET /v1/self/days serves so an external device can pull the
+// Mac's stats back and list it alongside its own feeds.
+func (s *Store) GetSelfDays(sinceDate string) ([]DeviceDay, error) {
+	q := `SELECT date, keystrokes, letters, modifiers, special, words, active_ms
+	      FROM daily_summary WHERE keystrokes > 0`
+	args := []any{}
+	if sinceDate != "" {
+		q += " AND date >= ?"
+		args = append(args, sinceDate)
+	}
+	q += " ORDER BY date DESC"
+
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []DeviceDay
+	for rows.Next() {
+		var d DeviceDay
+		if err := rows.Scan(&d.Date, &d.Keystrokes, &d.Letters, &d.Modifiers,
+			&d.Special, &d.Words, &d.ActiveMs); err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // ListDevices returns all registered devices, most-recently-seen first.
 func (s *Store) ListDevices() ([]DeviceInfo, error) {
 	rows, err := s.db.Query(`

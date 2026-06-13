@@ -69,6 +69,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /v1/devices/{id}", s.guard(s.handleDeleteDevice))
 	mux.HandleFunc("GET /v1/devices", s.guard(s.handleListDevices))
 
+	// Read-only: THIS Mac's own daily aggregates (the local capture path), so a
+	// device can pull the Mac's stats back and show it alongside its own feeds.
+	mux.HandleFunc("GET /v1/self/days", s.guard(s.handleGetSelfDays))
+
 	return mux
 }
 
@@ -185,6 +189,23 @@ func (s *Server) handleGetDays(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	days, err := s.store.GetDeviceDays(r.PathValue("id"), since)
+	if err != nil {
+		http.Error(w, "storage error", http.StatusInternalServerError)
+		return
+	}
+	if days == nil {
+		days = []storage.DeviceDay{}
+	}
+	writeJSON(w, http.StatusOK, days)
+}
+
+func (s *Server) handleGetSelfDays(w http.ResponseWriter, r *http.Request) {
+	since := r.URL.Query().Get("since")
+	if since != "" && !dateRe.MatchString(since) {
+		http.Error(w, "bad since", http.StatusBadRequest)
+		return
+	}
+	days, err := s.store.GetSelfDays(since)
 	if err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return

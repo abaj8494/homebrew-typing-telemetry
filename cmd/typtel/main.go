@@ -37,7 +37,31 @@ var (
 var rootCmd = &cobra.Command{
 	Use:   "typtel",
 	Short: "Typing telemetry - track your keystrokes",
-	Long:  `A keystroke tracking tool for developers. Shows daily keystroke counts and statistics.`,
+	Long: `Typtel — keystroke & typing telemetry for developers.
+
+Run with no arguments to open the interactive dashboard (TUI).
+
+SEE YOUR TYPING STATS
+  typtel today                 Today's keystroke count
+  typtel today --json          Today's full breakdown (letters/modifiers/special/words)
+  typtel stats                 Today + this week, plus typing speed (WPM)
+  typtel devices show <id>     Per-day table for an external device,
+                               with letters/modifiers/special/words/active time
+  typtel v                     Open the charts/heatmap in a browser
+
+PRACTICE
+  typtel test                  Interactive typing speed test (25 words)
+  typtel test -w 50            Longer test (50 words)
+  typtel test -l au            Use AU English spelling (saved as default)
+    in-test keys: tab=new words  esc=options  enter=start  ctrl+c=quit
+
+DEVICE FEEDS (optional — external devices that push their own stats)
+  typtel devices               List registered devices and today's count
+  typtel devices token         Print the ingest bearer token
+  typtel devices enable        Enable the device ingest API
+
+  typtel help <command>        Detailed help for any command
+  typtel version               Version info`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runTUI()
 	},

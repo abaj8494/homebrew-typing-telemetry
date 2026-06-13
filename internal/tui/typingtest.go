@@ -1086,35 +1086,46 @@ func (m TypingTestModel) View() string {
 		boxWidth = 100
 	}
 
-	// Only show menubar when NOT running
+	// Only show the menubar when NOT running, but RESERVE its height while
+	// running so the box (and the words) never shift vertically on keystroke 1.
 	if m.state != StateRunning {
 		b.WriteString(m.renderMenuBar())
-		b.WriteString("\n\n")
+	} else {
+		b.WriteString(" ")
 	}
+	b.WriteString("\n\n")
 
 	// Build typing test content for the box
 	var testContent strings.Builder
 
-	// Show average pace and info ONLY before typing starts
-	if m.state == StateReady {
-		if m.avgWPM > 0 && m.testCount > 0 {
-			testContent.WriteString(promptStyle.Render(fmt.Sprintf("Average: %.0f WPM", m.avgWPM)))
+	// Fixed-height header (Ready + Running): the "Average / Start typing" prompt
+	// occupies the SAME vertical space as the blank header rendered while
+	// running, so the text doesn't jump up when typing begins. Two slots, each
+	// "line + blank line" = 4 lines total in both states, regardless of whether
+	// an average is available.
+	if m.state == StateReady || m.state == StateRunning {
+		// Slot 1: average / personal best (shown in Ready only; blank otherwise).
+		if m.state == StateReady && m.avgWPM > 0 && m.testCount > 0 {
+			avgLine := promptStyle.Render(fmt.Sprintf("Average: %.0f WPM", m.avgWPM))
 			if m.personalBest > 0 {
-				testContent.WriteString(promptStyle.Render(fmt.Sprintf("  •  Best: %.0f WPM", m.personalBest)))
+				avgLine += promptStyle.Render(fmt.Sprintf("  •  Best: %.0f WPM", m.personalBest))
 			}
-			testContent.WriteString("\n\n")
+			testContent.WriteString(avgLine)
 		}
-		testContent.WriteString(promptStyle.Render("Start typing to begin..."))
 		testContent.WriteString("\n\n")
-	} else if m.state == StateRunning {
-		// Add top padding to maintain consistent box height during running
-		testContent.WriteString("\n")
+		// Slot 2: "start typing" hint (shown in Ready only; blank otherwise).
+		if m.state == StateReady {
+			testContent.WriteString(promptStyle.Render("Start typing to begin..."))
+		}
+		testContent.WriteString("\n\n")
 	}
 
 	// Render the text with highlighting
 	testContent.WriteString(m.renderText())
 
-	// Stats during typing (always show during running to maintain consistent box height)
+	// Footer (Ready + Running): reserve the same 3 lines in both states so the
+	// box stays an identical size before and during typing. Live WPM/accuracy
+	// fills it while running; it's blank (but height-reserved) when ready.
 	if m.state == StateRunning {
 		testContent.WriteString("\n\n")
 		if m.options.LiveWPM {
@@ -1130,6 +1141,8 @@ func (m TypingTestModel) View() string {
 			// Empty line to maintain box height when LiveWPM is off
 			testContent.WriteString(" ")
 		}
+	} else if m.state == StateReady {
+		testContent.WriteString("\n\n ")
 	}
 
 	// Final results (inside box)
@@ -1149,7 +1162,8 @@ func (m TypingTestModel) View() string {
 
 	b.WriteString(typingBoxStyle.Render(testContent.String()))
 
-	// Help text OUTSIDE the box - hide during running for cleaner UI
+	// Help text OUTSIDE the box - hidden during running for a cleaner UI, but its
+	// height is reserved so removing it doesn't shift the box upward.
 	if m.state != StateRunning {
 		b.WriteString("\n\n")
 		if m.state == StateFinished {
@@ -1157,6 +1171,8 @@ func (m TypingTestModel) View() string {
 		} else {
 			b.WriteString(helpStyle.Render("tab: restart • esc: options • ↑: menu • ctrl+w: del word • ctrl+c: quit"))
 		}
+	} else {
+		b.WriteString("\n\n ")
 	}
 
 	return m.centerContent(b.String())
