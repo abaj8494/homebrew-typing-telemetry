@@ -56,6 +56,19 @@ type StatsJSON struct {
 		Words      float64 `json:"words"`
 	} `json:"week_averages"`
 	Speed SpeedJSON `json:"speed"`
+
+	// Devices is an additive, optional map of external-device feeds keyed by
+	// device_id. It is omitted entirely when no devices are registered, so the
+	// macOS watchdog's existing contract is byte-unchanged.
+	Devices map[string]DeviceJSON `json:"devices,omitempty"`
+}
+
+// DeviceJSON is one external device's entry in the optional "devices" block.
+// Today reuses the storage counts shape (absolute totals for today's date).
+type DeviceJSON struct {
+	Name     string                  `json:"name"`
+	Today    storage.DeviceDayCounts `json:"today"`
+	LastSeen string                  `json:"last_seen"`
 }
 
 // SpeedJSON is the typing-speed section of `typtel stats --json`. AvgWPM is
@@ -180,9 +193,42 @@ func runStatsJSON() error {
 	}
 	stats.Speed = speed
 
+	devices, err := buildDevicesJSON(store)
+	if err != nil {
+		return fmt.Errorf("get device stats: %w", err)
+	}
+	stats.Devices = devices
+
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
 	return enc.Encode(stats)
+}
+
+// buildDevicesJSON assembles the optional "devices" block. It returns nil when
+// no devices are registered so the key is omitted entirely (omitempty),
+// preserving the byte-for-byte JSON contract for installs that never use the
+// ingest API. Each device's "today" is its absolute counts for today's date.
+func buildDevicesJSON(store *storage.Store) (map[string]DeviceJSON, error) {
+	infos, err := store.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	if len(infos) == 0 {
+		return nil, nil
+	}
+
+	today := time.Now().Format("2006-01-02")
+	out := make(map[string]DeviceJSON, len(infos))
+	for _, info := range infos {
+		entry := DeviceJSON{Name: info.Name, LastSeen: info.LastSeen}
+		if c, err := store.GetDeviceDay(info.DeviceID, today); err != nil {
+			return nil, err
+		} else if c != nil {
+			entry.Today = *c
+		}
+		out[info.DeviceID] = entry
+	}
+	return out, nil
 }
 
 // buildSpeedJSON assembles the typing-speed section: average WPM over rolling

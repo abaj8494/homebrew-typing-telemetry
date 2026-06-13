@@ -96,6 +96,7 @@ static int openFile(const char* path) {
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -113,6 +114,7 @@ import (
 	"fyne.io/systray"
 	"github.com/aayushbajaj/typing-telemetry/internal/appfilter"
 	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
+	"github.com/aayushbajaj/typing-telemetry/internal/ingest"
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
 	"github.com/aayushbajaj/typing-telemetry/internal/mousetracker"
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
@@ -250,6 +252,29 @@ func main() {
 	// timestamps, so average-WPM has real history on first launch of v1.4.
 	if err := store.BackfillActiveTime(); err != nil {
 		log.Printf("Active-time backfill failed: %v", err)
+	}
+
+	// Lifetime context, cancelled on shutdown to gracefully stop background
+	// goroutines such as the device-ingest listener.
+	ctx, cancelCtx := context.WithCancel(context.Background())
+	defer cancelCtx()
+
+	// Device-ingest HTTP API (v1.4142). Opt-in and disabled by default. When
+	// enabled it accepts absolute daily aggregates from external devices over a
+	// Tailscale-bound, token-gated listener into the dedicated device_* tables —
+	// the macOS capture path is untouched. Toggling this requires a restart.
+	if store.GetSettingBool(storage.SettingDeviceIngestEnabled) {
+		token, _ := store.GetSetting(storage.SettingDeviceIngestToken)
+		addr := store.GetSettingOr(storage.SettingDeviceIngestBindAddr, defaultBindAddr)
+		peersRaw, _ := store.GetSetting(storage.SettingDeviceIngestPeers)
+		peers := splitCSV(peersRaw)
+		srv := ingest.New(store, token, addr, peers, Version)
+		go func() {
+			if err := srv.Start(ctx); err != nil {
+				log.Printf("[ingest] stopped: %v", err)
+			}
+		}()
+		log.Printf("[ingest] listening on %s", addr)
 	}
 
 	// Start keylogger in background
@@ -434,6 +459,29 @@ func onExit() {
 	}
 }
 
+// maxDeviceSlots caps how many external devices the menu can show. Slots are
+// pre-allocated at build time (systray menus are static) and shown/hidden on
+// the stats ticker, mirroring the leaderboard pattern.
+const maxDeviceSlots = 5
+
+// deviceMenuSlot holds the menu items for one external device: a per-device
+// submenu (titled with the device name) plus its stat rows.
+type deviceMenuSlot struct {
+	root       *systray.MenuItem
+	keystrokes *systray.MenuItem
+	words      *systray.MenuItem
+	breakdown  *systray.MenuItem
+	active     *systray.MenuItem
+	lastSeen   *systray.MenuItem
+}
+
+// mDevices is the "📱 Devices" parent (hidden when no device has reported);
+// deviceSlots are its pre-allocated per-device rows.
+var (
+	mDevices    *systray.MenuItem
+	deviceSlots []deviceMenuSlot
+)
+
 func buildMenu() {
 	// Today's stats
 	mTodayKeystrokes = systray.AddMenuItem("Today: -- keystrokes (-- words)", "")
@@ -525,6 +573,32 @@ func buildMenu() {
 	mSpeedFastWin.Disable()
 	mSpeedFastMin = mSpeed.AddSubMenuItem("   Best minute: -- WPM", "Most words in a single clock-minute")
 	mSpeedFastMin.Disable()
+
+	// Devices submenu (v1.4142): keystroke stats pushed from external devices
+	// (e.g. a reMarkable tablet) via the opt-in ingest API. These are a separate
+	// source and never mix into the Mac's own totals. The parent is hidden
+	// entirely until a device registers, so non-users see no change. Slots are
+	// pre-allocated and populated on the stats ticker (updateDevicesDisplay).
+	mDevices = systray.AddMenuItem("📱 Devices", "Keystroke stats from external devices")
+	for i := 0; i < maxDeviceSlots; i++ {
+		root := mDevices.AddSubMenuItem("device", "")
+		slot := deviceMenuSlot{
+			root:       root,
+			keystrokes: root.AddSubMenuItem("   Today: -- keystrokes", ""),
+			words:      root.AddSubMenuItem("   -- words", ""),
+			breakdown:  root.AddSubMenuItem("   -- letters / -- mod / -- special", ""),
+			active:     root.AddSubMenuItem("   -- active", ""),
+			lastSeen:   root.AddSubMenuItem("   last seen --", ""),
+		}
+		slot.keystrokes.Disable()
+		slot.words.Disable()
+		slot.breakdown.Disable()
+		slot.active.Disable()
+		slot.lastSeen.Disable()
+		root.Hide()
+		deviceSlots = append(deviceSlots, slot)
+	}
+	mDevices.Hide()
 
 	// Odometer submenu
 	mOdometer = systray.AddMenuItem("⏱️ Odometer", "Track session metrics")
@@ -1181,8 +1255,84 @@ func updateStatsDisplay() {
 	// Update typing-speed submenu
 	updateSpeedDisplay()
 
+	// Update external-device submenu
+	updateDevicesDisplay()
+
 	// Update leaderboard
 	updateLeaderboard()
+}
+
+// updateDevicesDisplay refreshes the 📱 Devices submenu from the device tables.
+// The parent is hidden when no device has reported; otherwise each registered
+// device gets a row showing today's absolute counts plus when it last reported.
+// Device stats are a separate source — they never fold into the Mac's totals.
+func updateDevicesDisplay() {
+	if mDevices == nil {
+		return
+	}
+	devices, err := store.ListDevices()
+	if err != nil || len(devices) == 0 {
+		mDevices.Hide()
+		for _, slot := range deviceSlots {
+			slot.root.Hide()
+		}
+		return
+	}
+
+	mDevices.Show()
+	today := time.Now().Format("2006-01-02")
+	for i, slot := range deviceSlots {
+		if i >= len(devices) {
+			slot.root.Hide()
+			continue
+		}
+		d := devices[i]
+		name := d.Name
+		if name == "" {
+			name = d.DeviceID
+		}
+		slot.root.SetTitle(name)
+
+		var ks, w, l, mod, sp, act int64
+		if c, _ := store.GetDeviceDay(d.DeviceID, today); c != nil {
+			ks, w, l, mod, sp, act = c.Keystrokes, c.Words, c.Letters, c.Modifiers, c.Special, c.ActiveMs
+		}
+		slot.keystrokes.SetTitle(fmt.Sprintf("   Today: %s keystrokes", formatAbsolute(ks)))
+		slot.words.SetTitle(fmt.Sprintf("   %s words", formatAbsolute(w)))
+		slot.breakdown.SetTitle(fmt.Sprintf("   %s letters / %s mod / %s special",
+			formatAbsolute(l), formatAbsolute(mod), formatAbsolute(sp)))
+		slot.active.SetTitle(fmt.Sprintf("   %s active", formatActiveMs(act)))
+		slot.lastSeen.SetTitle(fmt.Sprintf("   last seen %s", formatLastSeen(d.LastSeen)))
+		slot.root.Show()
+	}
+}
+
+// formatActiveMs renders active-typing milliseconds as a compact duration.
+func formatActiveMs(ms int64) string {
+	if ms <= 0 {
+		return "0m"
+	}
+	secs := ms / 1000
+	if h := secs / 3600; h > 0 {
+		return fmt.Sprintf("%dh %dm", h, (secs%3600)/60)
+	}
+	if m := secs / 60; m > 0 {
+		return fmt.Sprintf("%dm", m)
+	}
+	return fmt.Sprintf("%ds", secs)
+}
+
+// formatLastSeen renders an RFC3339 last_seen timestamp in the local zone, or a
+// dash when it is empty/unparseable.
+func formatLastSeen(s string) string {
+	if s == "" {
+		return "--"
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return s
+	}
+	return t.Local().Format("Jan 2 15:04")
 }
 
 // updateSpeedDisplay refreshes the ⚡ Typing Speed submenu: average WPM over

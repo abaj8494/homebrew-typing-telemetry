@@ -27,7 +27,8 @@ internal/inertia/           Synthetic key-repeat acceleration
 internal/wordcounter/       Stateful word-boundary detector (added v1.3.13)
 internal/appfilter/         NSWorkspace frontmost-app + per-app allowlist (added v1.3.13)
 internal/speedtracker/      Active-time + fastest-pace WPM tracker (added v1.4)
-internal/storage/           SQLite store + settings
+internal/ingest/            Opt-in HTTP device-ingest API; loopback + Tailscale serve (added v1.4142)
+internal/storage/           SQLite store + settings (+ device_* tables, devices.go)
 internal/tui/               Bubble Tea typing test
 pkg/stats/                  Pure functions for streaks / averages / peaks
 Casks/typtel.rb             Homebrew cask (synced to abaj8494/homebrew-typing-telemetry)

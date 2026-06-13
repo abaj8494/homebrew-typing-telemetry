@@ -28,6 +28,10 @@ var (
 	// JSON output flag for `today` and `stats` (machine-readable surface
 	// consumed by other tools like macos-watchdog).
 	jsonOutput bool
+
+	// deviceFilter (--device) reroutes `today`/`stats` to read an external
+	// device's tables instead of this Mac's daily_summary.
+	deviceFilter string
 )
 
 var rootCmd = &cobra.Command{
@@ -43,6 +47,9 @@ var statsCmd = &cobra.Command{
 	Use:   "stats",
 	Short: "Show typing statistics",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if deviceFilter != "" {
+			return runDevicesShow(deviceFilter)
+		}
 		if jsonOutput {
 			return runStatsJSON()
 		}
@@ -54,6 +61,12 @@ var todayCmd = &cobra.Command{
 	Use:   "today",
 	Short: "Show today's keystroke count (for menu bar)",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if deviceFilter != "" {
+			if jsonOutput {
+				return runDeviceTodayJSON(deviceFilter)
+			}
+			return runDeviceTodayText(deviceFilter)
+		}
 		if jsonOutput {
 			return runTodayJSON()
 		}
@@ -105,12 +118,15 @@ func init() {
 
 	todayCmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit machine-readable JSON instead of text")
 	statsCmd.Flags().BoolVar(&jsonOutput, "json", false, "Emit machine-readable JSON instead of text")
+	todayCmd.Flags().StringVar(&deviceFilter, "device", "", "Read an external device's stats instead of this Mac's")
+	statsCmd.Flags().StringVar(&deviceFilter, "device", "", "Read an external device's stats instead of this Mac's")
 
 	rootCmd.AddCommand(statsCmd)
 	rootCmd.AddCommand(todayCmd)
 	rootCmd.AddCommand(testCmd)
 	rootCmd.AddCommand(viewCmd)
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(devicesCmd)
 }
 
 func main() {

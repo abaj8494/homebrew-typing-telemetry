@@ -169,6 +169,29 @@ func initSchema(db *sql.DB) error {
 		distance REAL DEFAULT 0,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 	);
+
+	-- Device ingest (v1.4142): absolute daily aggregates pushed from external
+	-- devices (e.g. a reMarkable tablet) over a Tailscale-bound HTTP API. These
+	-- are a deliberately SEPARATE source — they never mix into daily_summary.
+	-- See internal/ingest and internal/storage/devices.go.
+	CREATE TABLE IF NOT EXISTS devices (
+		device_id  TEXT PRIMARY KEY,
+		name       TEXT,
+		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		last_seen  DATETIME
+	);
+	CREATE TABLE IF NOT EXISTS device_daily_summary (
+		device_id  TEXT NOT NULL,
+		date       TEXT NOT NULL,           -- device-LOCAL YYYY-MM-DD
+		keystrokes INTEGER DEFAULT 0,
+		letters    INTEGER DEFAULT 0,
+		modifiers  INTEGER DEFAULT 0,
+		special    INTEGER DEFAULT 0,
+		words      INTEGER DEFAULT 0,
+		active_ms  INTEGER DEFAULT 0,
+		updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY (device_id, date)
+	);
 	`
 	_, err := db.Exec(schema)
 	if err != nil {
@@ -713,6 +736,12 @@ const (
 	SettingWordCountStrictMode = "word_count_strict_mode"
 	SettingWordCountAllowlist  = "word_count_app_allowlist"
 	SettingWordCountAppsSeen   = "word_count_apps_seen"
+	// Device ingest settings (v1.4142). Opt-in HTTP ingest of external-device
+	// daily aggregates over Tailscale. Disabled by default.
+	SettingDeviceIngestEnabled  = "device_ingest_enabled"
+	SettingDeviceIngestToken    = "device_ingest_token"
+	SettingDeviceIngestBindAddr = "device_ingest_bind_addr"
+	SettingDeviceIngestPeers    = "device_ingest_peer_allowlist"
 )
 
 // Distance unit options
@@ -757,6 +786,28 @@ func (s *Store) SetSetting(key, value string) error {
 		ON CONFLICT(key) DO UPDATE SET value = ?
 	`, key, value, value)
 	return err
+}
+
+// GetSettingBool returns a boolean setting. Absent or unparseable values yield
+// false, so unset keys default to disabled.
+func (s *Store) GetSettingBool(key string) bool {
+	val, _ := s.GetSetting(key)
+	return val == "true" || val == "1"
+}
+
+// SetSettingBool persists a boolean setting using the canonical "true"/"false"
+// encoding.
+func (s *Store) SetSettingBool(key string, v bool) error {
+	return s.SetSetting(key, boolToString(v))
+}
+
+// GetSettingOr returns the stored setting or, when it is unset/empty, the
+// supplied fallback.
+func (s *Store) GetSettingOr(key, fallback string) string {
+	if val, _ := s.GetSetting(key); val != "" {
+		return val
+	}
+	return fallback
 }
 
 // GetMenubarSettings returns the current menubar display settings
