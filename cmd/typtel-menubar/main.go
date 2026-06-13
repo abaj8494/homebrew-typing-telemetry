@@ -8,6 +8,73 @@ package main
 #cgo LDFLAGS: -framework Cocoa -framework UserNotifications
 
 #import <Cocoa/Cocoa.h>
+#include <stdlib.h>
+
+// fyne/systray hides its NSStatusItem inside its private SystrayAppDelegate, so
+// we reach it via KVC on the app delegate (ivars `statusItem` and `menu`). This
+// lets us (a) draw a colored attributedTitle — fyne's SetTitle only sets a plain
+// NSString — and (b) pop up fyne's own menu ourselves, since taking over the
+// left-tap (SetOnTapped) suppresses fyne's automatic show_menu. Both are best
+// effort: if the delegate shape ever changes, the @try/nil guards no-op safely.
+static id systrayDelegateValue(NSString *key) {
+    id delegate = [NSApp delegate];
+    if (delegate == nil) return nil;
+    @try {
+        return [delegate valueForKey:key];
+    } @catch (NSException *e) {
+        return nil;
+    }
+}
+
+// setMenuBarTitle sets the status-item button title. When colored != 0 it draws
+// a high-contrast attributedTitle (system orange); otherwise a default-attributed
+// string that follows the menu bar's own light/dark text color.
+static void setMenuBarTitle(const char* ctitle, int colored) {
+    NSString *title = [NSString stringWithUTF8String:ctitle];
+    void (^block)(void) = ^{
+        @autoreleasepool {
+            NSStatusItem *si = (NSStatusItem *)systrayDelegateValue(@"statusItem");
+            if (si == nil) return;
+            NSStatusBarButton *button = si.button;
+            if (button == nil) return;
+            if (colored) {
+                NSDictionary *attrs = @{ NSForegroundColorAttributeName: [NSColor systemOrangeColor] };
+                button.attributedTitle = [[NSAttributedString alloc] initWithString:title attributes:attrs];
+            } else {
+                button.attributedTitle = [[NSAttributedString alloc] initWithString:title];
+            }
+        }
+    };
+    if ([NSThread isMainThread]) {
+        block();
+    } else {
+        dispatch_async(dispatch_get_main_queue(), block);
+    }
+}
+
+// popUpSystrayMenu pops fyne's status-bar menu under the button. It blocks (runs
+// a modal tracking loop) until the menu is dismissed, so the caller can revert
+// the title once it returns. Must be called from the main thread (the tap
+// handler already is); a background caller is dispatched synchronously.
+static void popUpSystrayMenu(void) {
+    void (^block)(void) = ^{
+        @autoreleasepool {
+            NSStatusItem *si = (NSStatusItem *)systrayDelegateValue(@"statusItem");
+            NSMenu *menu = (NSMenu *)systrayDelegateValue(@"menu");
+            if (si == nil || menu == nil) return;
+            NSStatusBarButton *button = si.button;
+            if (button == nil) return;
+            [menu popUpMenuPositioningItem:nil
+                                atLocation:NSMakePoint(0, button.bounds.size.height + 6)
+                                    inView:button];
+        }
+    };
+    if ([NSThread isMainThread]) {
+        block();
+    } else {
+        dispatch_sync(dispatch_get_main_queue(), block);
+    }
+}
 
 // Modern alert dialog using NSAlert
 static int showAlert(const char* messageText, const char* informativeText, const char** buttons, int buttonCount) {
@@ -123,9 +190,16 @@ import (
 )
 
 var (
-	store          *storage.Store
-	lastMenuTitle  string
-	menuTitleMutex sync.Mutex
+	store           *storage.Store
+	lastMenuTitle   string
+	lastMenuColored bool
+	menuTitleMutex  sync.Mutex
+	// deviceSumActive is true while the menu is open from a menu-bar tap: the
+	// title then shows the Mac's stats summed with every connected device's
+	// today totals, drawn in a high-contrast color. It reverts when the menu
+	// closes. See onMenuBarTapped / updateMenuBarTitle.
+	deviceSumActive bool
+	deviceSumMutex  sync.Mutex
 	// appFilter is shared between the keystroke loop and the settings UI so
 	// that toggling strict mode or editing the allowlist takes effect live.
 	appFilter = appfilter.New()
@@ -429,6 +503,10 @@ func onReady() {
 	// Set initial title
 	systray.SetTitle("⌨️")
 	systray.SetTooltip("Typing Telemetry")
+
+	// Taking over the left-tap means fyne no longer auto-opens the menu, so the
+	// handler opens it itself (and reverts the device-sum reveal on close).
+	systray.SetOnTapped(onMenuBarTapped)
 
 	// Build the menu structure
 	buildMenu()
@@ -1109,20 +1187,33 @@ func updateInertiaConfig() {
 func updateMenuBarTitle() {
 	stats, err := store.GetTodayStats()
 	if err != nil {
-		setMenuTitle("⌨️ --")
+		setMenuTitle("⌨️ --", false)
 		return
 	}
 
 	settings := store.GetMenubarSettings()
 	mouseStats, _ := store.GetTodayMouseStats()
 
+	keystrokes := stats.Keystrokes
+	words := stats.Words
+
+	// While the menu is open from a tap, fold every connected device's today
+	// totals into the keystroke/word counts and draw the title highlighted.
+	// Clicks and distance stay Mac-only — devices report neither.
+	colored := deviceSumEnabled()
+	if colored {
+		dk, dw := deviceTotalsToday()
+		keystrokes += dk
+		words += dw
+	}
+
 	var parts []string
 
 	if settings.ShowKeystrokes {
-		parts = append(parts, fmt.Sprintf("⌨️%s", formatAbsolute(stats.Keystrokes)))
+		parts = append(parts, fmt.Sprintf("⌨️%s", formatAbsolute(keystrokes)))
 	}
 	if settings.ShowWords {
-		parts = append(parts, fmt.Sprintf("%sw", formatAbsolute(stats.Words)))
+		parts = append(parts, fmt.Sprintf("%sw", formatAbsolute(words)))
 	}
 	if settings.ShowClicks && mouseStats != nil {
 		parts = append(parts, fmt.Sprintf("🖱️%s", formatAbsolute(mouseStats.ClickCount)))
@@ -1136,19 +1227,69 @@ func updateMenuBarTitle() {
 		title = strings.Join(parts, " | ")
 	}
 
-	setMenuTitle(title)
+	setMenuTitle(title, colored)
 }
 
-func setMenuTitle(title string) {
+// deviceTotalsToday sums every registered device's today keystrokes and words.
+// Device stats are a separate source from the Mac's daily_summary; this is the
+// only place they fold into the menu-bar figure (the tap reveal).
+func deviceTotalsToday() (keystrokes, words int64) {
+	devices, err := store.ListDevices()
+	if err != nil {
+		return 0, 0
+	}
+	today := time.Now().Format("2006-01-02")
+	for _, d := range devices {
+		if c, _ := store.GetDeviceDay(d.DeviceID, today); c != nil {
+			keystrokes += c.Keystrokes
+			words += c.Words
+		}
+	}
+	return keystrokes, words
+}
+
+func deviceSumEnabled() bool {
+	deviceSumMutex.Lock()
+	defer deviceSumMutex.Unlock()
+	return deviceSumActive
+}
+
+func setDeviceSumActive(on bool) {
+	deviceSumMutex.Lock()
+	deviceSumActive = on
+	deviceSumMutex.Unlock()
+}
+
+// onMenuBarTapped runs on a left-tap of the status item (we took over the tap
+// from fyne via SetOnTapped). It reveals the device-summed, highlighted title,
+// then opens fyne's menu — popUpSystrayMenu blocks until the menu is dismissed
+// (selection or click-away), at which point the title reverts to Mac-only.
+func onMenuBarTapped() {
+	setDeviceSumActive(true)
+	updateMenuBarTitle()
+	C.popUpSystrayMenu()
+	setDeviceSumActive(false)
+	updateMenuBarTitle()
+}
+
+func setMenuTitle(title string, colored bool) {
 	menuTitleMutex.Lock()
 	defer menuTitleMutex.Unlock()
 
-	if title == lastMenuTitle {
+	if title == lastMenuTitle && colored == lastMenuColored {
 		return
 	}
 
 	lastMenuTitle = title
-	systray.SetTitle(title)
+	lastMenuColored = colored
+
+	ctitle := C.CString(title)
+	defer C.free(unsafe.Pointer(ctitle))
+	c := C.int(0)
+	if colored {
+		c = C.int(1)
+	}
+	C.setMenuBarTitle(ctitle, c)
 }
 
 func updateStatsDisplay() {
