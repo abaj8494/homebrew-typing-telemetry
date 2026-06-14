@@ -112,14 +112,18 @@ func runDevicesList() error {
 	}
 
 	today := time.Now().Format("2006-01-02")
-	fmt.Printf("%-16s %-26s %-22s %s\n", "DEVICE_ID", "NAME", "LAST_SEEN", "TODAY_KEYSTROKES")
+	// The KEYS/WORDS/MODS/SPECIAL columns are today's counts for each device.
+	fmt.Printf("%-14s %-16s %9s %8s %8s %8s  %s\n",
+		"DEVICE_ID", "NAME", "KEYS", "WORDS", "MODS", "SPECIAL", "LAST_SEEN")
 	for _, d := range devices {
-		todayKeys := int64(0)
+		var keys, words, mods, special int64
 		if c, err := store.GetDeviceDay(d.DeviceID, today); err == nil && c != nil {
-			todayKeys = c.Keystrokes
+			keys, words, mods, special = c.Keystrokes, c.Words, c.Modifiers, c.Special
 		}
-		fmt.Printf("%-16s %-26s %-22s %s\n",
-			d.DeviceID, truncate(d.Name, 26), dashIfEmpty(d.LastSeen), formatNum(todayKeys))
+		fmt.Printf("%-14s %-16s %9s %8s %8s %8s  %s\n",
+			d.DeviceID, truncate(d.Name, 16),
+			formatNum(keys), formatNum(words), formatNum(mods), formatNum(special),
+			dashIfEmpty(d.LastSeen))
 	}
 	return nil
 }

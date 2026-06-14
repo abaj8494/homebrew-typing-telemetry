@@ -1549,7 +1549,7 @@ func updateLeaderboard() {
 
 func showAbout() {
 	response := showAlertDialog("Typing Telemetry",
-		fmt.Sprintf("Version %s\n\nTrack your keystrokes and typing speed.\n\nGitHub: github.com/abaj8494/typing-telemetry", Version),
+		fmt.Sprintf("Version %s\nPID: %d\n\nTrack your keystrokes and typing speed.\n\nGitHub: github.com/abaj8494/typing-telemetry", Version, os.Getpid()),
 		[]string{"OK", "Open GitHub"})
 
 	if response == 1 {
