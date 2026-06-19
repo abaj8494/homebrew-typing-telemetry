@@ -84,6 +84,77 @@ Toggle and configure via **Settings** > **Inertia Settings** in the menu bar:
 
 Double-tap Shift to reset acceleration to base speed.
 
+## reMarkable Connection
+
+Typtel can optionally accept keystroke aggregates from an **external device** —
+for example a reMarkable Paper Pro with a Type Folio — and store them as a
+*separate* feed alongside your Mac's stats. **This is entirely opt-in and
+disabled by default.** A fresh install (or a `brew upgrade`) never opens a port
+or talks to any device until you explicitly run `typtel devices enable`. If you
+don't have a device to feed it, you can ignore this section completely.
+
+The transport is a token-gated HTTP listener bound to **loopback only**
+(`127.0.0.1:8889`), reached from the device over your private **Tailscale**
+tailnet. Device stats never mix into your Mac totals — they're queryable on
+their own (`typtel today --device <id>`) and surface as an optional `"devices"`
+block in `typtel stats --json`.
+
+### On the Mac (this app)
+
+1. Enable the ingest API and grab the bearer token:
+
+   ```sh
+   typtel devices enable        # generates a token, prints it + the bind addr
+   ```
+
+   The token is also printable later with `typtel devices token`
+   (`--rotate` to regenerate). Toggling enable/disable requires a **menubar
+   restart** to take effect.
+
+2. Publish the loopback listener to your tailnet with `tailscale serve` (raw
+   TCP passthrough — keeps the device on plain HTTP, no TLS/MagicDNS needed):
+
+   ```sh
+   tailscale serve --bg --tcp 8889 tcp://127.0.0.1:8889
+   tailscale serve status       # verify; reset with: tailscale serve --tcp=8889 off
+   ```
+
+   Binding loopback + `tailscale serve` is deliberate: on macOS the Tailscale
+   client won't deliver inbound tailnet connections to a listener on the utun
+   IP, and this keeps the port off your LAN. The bearer token is the auth
+   boundary.
+
+### On the device
+
+The device PUTs **absolute** daily totals (not deltas, so a retried PUT over a
+flaky link can never double-count) to:
+
+```
+PUT http://<your-mac-tailnet-ip>:8889/v1/devices/<id>/days/<YYYY-MM-DD>
+Authorization: Bearer <token>
+{ "keystrokes": …, "letters": …, "modifiers": …, "special": …,
+  "words": …, "active_ms": … }
+```
+
+Probe liveness (no auth) with `GET /v1/health`. The device classifies its own
+keys and sends pre-aggregated counts — Typtel stores them as opaque totals and
+never re-classifies them.
+
+> **reMarkable gotcha:** the tablet's `tailscaled` runs in userspace-networking
+> mode (no `/dev/net/tun`), so its own processes can't open a socket directly to
+> a `100.x` peer. The device must send its PUTs through tailscaled's netstack
+> (an `--outbound-http-proxy-listen` proxy, or `tailscale nc`), not a plain
+> `curl`/`requests.put`. That's configured on the device side.
+
+### Inspecting and removing device data
+
+```sh
+typtel devices               # list registered devices + last-seen
+typtel devices show <id>     # recent days for a device (add --json)
+typtel devices forget <id>   # delete a device and all its recorded days
+typtel devices disable       # turn the listener off (restart menubar to apply)
+```
+
 ## Data Storage
 
 All data is stored locally in `~/.local/share/typtel/`:
