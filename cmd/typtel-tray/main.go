@@ -1,0 +1,277 @@
+//go:build linux
+
+// Command typtel-tray is the Linux counterpart to typtel-menubar: a background
+// daemon that captures keystrokes into the shared SQLite store, optionally runs
+// the inertia accelerating key-repeat, and surfaces live typing statistics in a
+// StatusNotifier tray icon (XFCE, KDE, GNOME-with-appindicator, etc.).
+//
+// Capture and inertia are pure-Go X11 (internal/x11) — no root, no /dev/input,
+// no special group; just a reachable $DISPLAY. The stats pipeline (wordcounter,
+// speedtracker, storage) is shared verbatim with the macOS build.
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+
+	"fyne.io/systray"
+
+	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
+	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
+	"github.com/aayushbajaj/typing-telemetry/internal/speedtracker"
+	"github.com/aayushbajaj/typing-telemetry/internal/storage"
+	"github.com/aayushbajaj/typing-telemetry/internal/wordcounter"
+	"github.com/aayushbajaj/typing-telemetry/pkg/stats"
+)
+
+// Version is set via -ldflags at build time.
+var Version = "dev"
+
+var (
+	store *storage.Store
+	speed = &speedAccumulator{}
+)
+
+func main() {
+	log.SetPrefix("typtel-tray: ")
+	log.SetFlags(log.Ltime)
+
+	if !keylogger.CheckAccessibilityPermissions() {
+		log.Fatal("cannot reach an X display — is DISPLAY set? (this build needs an X11 session)")
+	}
+
+	var err error
+	store, err = storage.New()
+	if err != nil {
+		log.Fatalf("failed to open store: %v", err)
+	}
+	speed.store = store
+
+	keystrokeChan, err := keylogger.Start()
+	if err != nil {
+		log.Fatalf("failed to start keylogger: %v", err)
+	}
+	go processKeystrokes(keystrokeChan)
+
+	// Start inertia if it was left enabled in settings.
+	if cfg := inertiaConfig(); cfg.Enabled {
+		if err := inertia.Start(cfg); err != nil {
+			log.Printf("warning: inertia failed to start: %v", err)
+		} else {
+			log.Println("inertia enabled")
+		}
+	}
+
+	// Restore terminal/X state on Ctrl-C or kill by routing through onExit.
+	go func() {
+		sig := make(chan os.Signal, 1)
+		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+		<-sig
+		systray.Quit()
+	}()
+
+	systray.Run(onReady, onExit)
+}
+
+// processKeystrokes is the shared keystroke pipeline: record each key, credit
+// active typing time, and count completed words with their fastest-pace
+// candidates. Mirrors cmd/typtel-menubar's loop, minus the macOS-only per-app
+// filtering / odometer / mouse paths.
+func processKeystrokes(ch <-chan keylogger.KeystrokeEvent) {
+	counter := wordcounter.New()
+	tracker := speedtracker.New()
+	for ev := range ch {
+		if err := store.RecordKeystroke(ev.Keycode); err != nil {
+			log.Printf("record keystroke: %v", err)
+		}
+		now := time.Now()
+		date := now.Format("2006-01-02")
+		if ms := tracker.OnKeystroke(now); ms > 0 {
+			speed.addActive(date, ms)
+		}
+		if counter.Observe(wordcounter.Event{
+			Keycode:   ev.Keycode,
+			CmdHeld:   ev.CmdHeld(),
+			CtrlHeld:  ev.CtrlHeld(),
+			OptHeld:   ev.OptHeld(),
+			ShiftHeld: ev.ShiftHeld(),
+		}) {
+			if err := store.IncrementWordCount(date); err != nil {
+				log.Printf("increment words: %v", err)
+			}
+			speed.recordSample(date, tracker.OnWord(now))
+		}
+	}
+}
+
+func inertiaConfig() inertia.Config {
+	s := store.GetInertiaSettings()
+	return inertia.Config{
+		Enabled:   s.Enabled,
+		MaxSpeed:  s.MaxSpeed,
+		Threshold: s.Threshold,
+		AccelRate: s.AccelRate,
+	}
+}
+
+func onReady() {
+	systray.SetIcon(trayIcon())
+	systray.SetTitle("typtel")
+	systray.SetTooltip("typing-telemetry")
+
+	mKeys := systray.AddMenuItem("Keystrokes today: —", "")
+	mWords := systray.AddMenuItem("Words today: —", "")
+	mWPM := systray.AddMenuItem("Avg WPM: —", "")
+	mFast := systray.AddMenuItem("Fastest WPM: —", "")
+	for _, m := range []*systray.MenuItem{mKeys, mWords, mWPM, mFast} {
+		m.Disable()
+	}
+
+	systray.AddSeparator()
+	mInertia := systray.AddMenuItemCheckbox("Inertia (accelerating repeat)",
+		"Toggle the accelerating key-repeat", inertia.IsRunning())
+	systray.AddSeparator()
+	mQuit := systray.AddMenuItem("Quit typtel", "Stop capture and exit")
+
+	refresh := func() {
+		speed.flush()
+		st, err := store.GetTodayStats()
+		if err != nil || st == nil {
+			return
+		}
+		wpm := stats.AverageWPM(st.Words, st.ActiveMs)
+		fastest := st.FastestWindowWPM
+		mKeys.SetTitle(fmt.Sprintf("Keystrokes today: %d", st.Keystrokes))
+		mWords.SetTitle(fmt.Sprintf("Words today: %d", st.Words))
+		mWPM.SetTitle(fmt.Sprintf("Avg WPM: %.0f", wpm))
+		mFast.SetTitle(fmt.Sprintf("Fastest WPM: %.0f", fastest))
+		systray.SetTooltip(fmt.Sprintf("typtel — %d keys · %d words · %.0f wpm",
+			st.Keystrokes, st.Words, wpm))
+	}
+
+	go func() {
+		refresh()
+		t := time.NewTicker(2 * time.Second)
+		defer t.Stop()
+		for range t.C {
+			refresh()
+		}
+	}()
+
+	go func() {
+		for {
+			select {
+			case <-mInertia.ClickedCh:
+				toggleInertia(mInertia)
+			case <-mQuit.ClickedCh:
+				systray.Quit()
+				return
+			}
+		}
+	}()
+}
+
+func toggleInertia(item *systray.MenuItem) {
+	enable := !inertia.IsRunning()
+	if err := store.SetInertiaEnabled(enable); err != nil {
+		log.Printf("persist inertia setting: %v", err)
+	}
+	cfg := inertiaConfig()
+	cfg.Enabled = enable
+	inertia.UpdateConfig(cfg)
+	if inertia.IsRunning() {
+		item.Check()
+		log.Println("inertia enabled")
+	} else {
+		item.Uncheck()
+		log.Println("inertia disabled")
+	}
+}
+
+func onExit() {
+	speed.flush()
+	keylogger.Stop()
+	inertia.Stop() // restores X auto-repeat
+	if store != nil {
+		store.Close()
+	}
+	log.Println("stopped")
+}
+
+// speedAccumulator batches active-time and fastest-pace writes so the keystroke
+// goroutine never hits the DB for speed on every key (mirrors the menubar's
+// design note: do not write speed per keystroke).
+type speedAccumulator struct {
+	store *storage.Store
+
+	mu       sync.Mutex
+	date     string
+	activeMs int64
+	burst    float64
+	window   float64
+	minute   float64
+	dirty    bool
+}
+
+func (a *speedAccumulator) addActive(date string, ms int64) {
+	a.mu.Lock()
+	a.rollIfNeededLocked(date)
+	a.activeMs += ms
+	a.dirty = true
+	a.mu.Unlock()
+}
+
+func (a *speedAccumulator) recordSample(date string, s speedtracker.Sample) {
+	a.mu.Lock()
+	a.rollIfNeededLocked(date)
+	a.burst = maxf(a.burst, s.Burst)
+	a.window = maxf(a.window, s.Window)
+	a.minute = maxf(a.minute, s.Minute)
+	a.dirty = true
+	a.mu.Unlock()
+}
+
+// rollIfNeededLocked flushes the previous day's pending totals when the date
+// rolls over (e.g. across midnight). Caller holds a.mu.
+func (a *speedAccumulator) rollIfNeededLocked(date string) {
+	if a.date != "" && a.date != date {
+		a.flushLocked()
+	}
+	a.date = date
+}
+
+func (a *speedAccumulator) flush() {
+	a.mu.Lock()
+	a.flushLocked()
+	a.mu.Unlock()
+}
+
+func (a *speedAccumulator) flushLocked() {
+	if !a.dirty || a.date == "" || a.store == nil {
+		return
+	}
+	if a.activeMs > 0 {
+		if err := a.store.AddActiveTime(a.date, a.activeMs); err != nil {
+			log.Printf("flush active time: %v", err)
+		}
+	}
+	if a.burst > 0 || a.window > 0 || a.minute > 0 {
+		if err := a.store.UpdateFastest(a.date, a.burst, a.window, a.minute); err != nil {
+			log.Printf("flush fastest: %v", err)
+		}
+	}
+	a.activeMs, a.burst, a.window, a.minute = 0, 0, 0, 0
+	a.dirty = false
+}
+
+func maxf(a, b float64) float64 {
+	if a > b {
+		return a
+	}
+	return b
+}
