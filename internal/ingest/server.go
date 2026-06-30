@@ -162,11 +162,36 @@ func (s *Server) handlePutDay(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "negative counts", http.StatusBadRequest)
 		return
 	}
-	if err := s.store.UpsertDeviceDay(r.PathValue("id"), r.PathValue("date"), c); err != nil {
+	id := r.PathValue("id")
+	if err := s.store.UpsertDeviceDay(id, r.PathValue("date"), c); err != nil {
 		http.Error(w, "storage error", http.StatusInternalServerError)
 		return
 	}
+	// Optional friendly name (v1.5.0): a pushing device may include ?name= so it
+	// shows by name instead of bare id. Backward-compatible — devices that send
+	// no name (e.g. the reMarkable client) are unaffected. UpsertDevice only
+	// overwrites the name when non-empty.
+	if name := r.URL.Query().Get("name"); name != "" {
+		if len(name) > 64 || hasControlChars(name) {
+			http.Error(w, "bad name", http.StatusBadRequest)
+			return
+		}
+		if err := s.store.UpsertDevice(id, name); err != nil {
+			http.Error(w, "storage error", http.StatusInternalServerError)
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// hasControlChars reports whether s contains any ASCII control character.
+func hasControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) handleGetDay(w http.ResponseWriter, r *http.Request) {

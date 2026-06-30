@@ -742,6 +742,14 @@ const (
 	SettingDeviceIngestToken    = "device_ingest_token"
 	SettingDeviceIngestBindAddr = "device_ingest_bind_addr"
 	SettingDeviceIngestPeers    = "device_ingest_peer_allowlist"
+	// Device push settings (v1.5.0). Opt-in OUTBOUND push of this machine's own
+	// daily aggregates to a host typtel's ingest API (the counterpart to the
+	// ingest settings above). Disabled by default; see internal/push.
+	SettingPushEnabled    = "push_enabled"
+	SettingPushBaseURL    = "push_base_url"
+	SettingPushToken      = "push_token"
+	SettingPushDeviceID   = "push_device_id"
+	SettingPushDeviceName = "push_device_name"
 )
 
 // Distance unit options

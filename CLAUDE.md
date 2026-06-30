@@ -28,6 +28,7 @@ internal/wordcounter/       Stateful word-boundary detector (added v1.3.13)
 internal/appfilter/         NSWorkspace frontmost-app + per-app allowlist (added v1.3.13)
 internal/speedtracker/      Active-time + fastest-pace WPM tracker (added v1.4)
 internal/ingest/            Opt-in HTTP device-ingest API; loopback + Tailscale serve (added v1.4142)
+internal/push/              Opt-in OUTBOUND push client — counterpart to ingest (added v1.5.0)
 internal/storage/           SQLite store + settings (+ device_* tables, devices.go)
 internal/tui/               Bubble Tea typing test
 pkg/stats/                  Pure functions for streaks / averages / peaks
@@ -139,3 +140,12 @@ Shared since v1.4 (typing speed): `internal/storage` gained the
 `AverageWPM`; and `internal/speedtracker` is a new pure package. The watchdog
 API can read speed via `GetSpeedAggregate` + `AverageWPM` with no new storage
 work. `typtel stats --json` exposes a `speed` block over the same data.
+
+Shared change in v1.5.0 (Linux port + device push): **`internal/ingest`** —
+`handlePutDay` now reads an optional `?name=` query and calls
+`store.UpsertDevice(id, name)` (backward-compatible; devices that send no name
+are unaffected). New **`internal/push`** is the outbound counterpart to ingest
+(opt-in; off unless `push_enabled`); it adds storage settings
+`SettingPush{Enabled,BaseURL,Token,DeviceID,DeviceName}` and the `typtel push`
+CLI. The Linux daemon `cmd/typtel-tray` runs the push loop. None of this is
+reached for a single-device user. See [[typtel-linux-port]].

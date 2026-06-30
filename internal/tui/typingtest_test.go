@@ -1660,3 +1660,18 @@ func TestWPMMath(t *testing.T) {
 		t.Errorf("netWPM floor: want 0, got %.2f", got)
 	}
 }
+
+// TestBackspaceAliases verifies the typing test deletes a character for
+// Backspace and its Linux/tmux aliases (Ctrl-H and Delete). Regression test for
+// backspace not working on Kali, where the terminal sent Ctrl-H/Delete.
+func TestBackspaceAliases(t *testing.T) {
+	for _, kt := range []tea.KeyType{tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH} {
+		m := NewTypingTest("", 25)
+		m.state = StateRunning
+		m.typed = "hello"
+		updated, _ := m.Update(tea.KeyMsg{Type: kt})
+		if got := updated.(TypingTestModel).typed; got != "hell" {
+			t.Errorf("key %v: typed = %q, want %q", kt, got, "hell")
+		}
+	}
+}

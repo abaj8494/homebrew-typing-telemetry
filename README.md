@@ -8,8 +8,13 @@ Keystroke and mouse distance metrics for developers. Tracks every keypress inclu
 
 ```sh
 brew tap abaj8494/typing-telemetry
-brew install --cask typtel
+brew install --cask typtel          # the menu-bar app (macOS)
+# optional: the cross-platform CLI (stats, typing test, charts, push)
+brew install abaj8494/typing-telemetry/typing-telemetry
 ```
+
+> On **Linux**, the cask doesn't apply — build the X11 tray from source; see
+> [Linux (X11)](#linux-x11).
 
 ### Accessibility Permissions
 
@@ -84,6 +89,28 @@ Toggle and configure via **Settings** > **Inertia Settings** in the menu bar:
 
 Double-tap Shift to reset acceleration to base speed.
 
+## Linux (X11)
+
+Typtel also runs on X11 Linux (tested on Kali/Debian) as **`typtel-tray`** — a
+StatusNotifier tray icon backed by the same SQLite store, keystroke capture, and
+**inertia** as the Mac. Capture and inertia are pure X11: no root, no
+`/dev/input`, no `input` group — just a reachable `$DISPLAY`. Wayland is not
+supported.
+
+The Homebrew cask is macOS-only; on Linux, build from source (needs Go and a C
+toolchain for SQLite):
+
+```sh
+git clone https://github.com/abaj8494/typing-telemetry && cd typing-telemetry
+CGO_ENABLED=1 go build -o build/typtel      ./cmd/typtel       # CLI: stats, typing test, charts
+CGO_ENABLED=1 go build -o build/typtel-tray ./cmd/typtel-tray  # tray daemon: capture + inertia
+./build/typtel-tray &   # tray icon shows today's keystrokes / words / WPM
+```
+
+- **Inertia** drives the X server's own key auto-repeat and ramps its rate while a key is held; toggle it from the tray menu. Needs `xset` (package `x11-xserver-utils`), and restores your original repeat settings when disabled.
+- **Charts** (`typtel v`) and the **typing test** (`typtel test`) work as on macOS — charts open in your browser via `xdg-open`.
+- To start it on login, drop a launcher at `~/.config/autostart/typtel-tray.desktop` with `Exec=…/typtel-tray`.
+
 ## reMarkable Connection
 
 Typtel can optionally accept keystroke aggregates from an **external device** —
@@ -146,6 +173,27 @@ never re-classifies them.
 > (an `--outbound-http-proxy-listen` proxy, or `tailscale nc`), not a plain
 > `curl`/`requests.put`. That's configured on the device side.
 
+### From another machine running typtel (Linux or Mac)
+
+If the other device runs typtel itself, you don't need a custom client — point
+its **built-in push** at this Mac instead of hand-rolling the PUT above:
+
+```sh
+# on the host (this Mac), from "On the Mac" above:
+typtel devices enable && typtel devices token   # enable ingest, copy the token
+
+# on the other device:
+typtel push enable --url http://<your-mac-tailnet-ip>:8889 \
+    --token <token> --id mybox --name "My Linux box"
+typtel push now                                  # one-shot test, then restart its typtel daemon
+```
+
+Push is **opt-in and off by default** — `typtel push` does nothing until you run
+`typtel push enable`. Once enabled, the device PUTs its absolute daily totals
+every ~45s (and once more on a clean exit). It then appears under **📱 Devices**
+in the menu bar and folds into the cross-device total revealed when you click the
+menu-bar icon. Manage it with `typtel push status` / `typtel push disable`.
+
 ### Inspecting and removing device data
 
 ```sh
@@ -195,8 +243,15 @@ This creates `coverage.html` with a detailed breakdown by package and function.
 ## Updating
 
 ```sh
-brew update && brew upgrade --cask typtel
+brew update
+brew upgrade --cask typtel                       # menu-bar app
+brew upgrade abaj8494/typing-telemetry/typing-telemetry   # CLI, if installed
 ```
+
+> Releases are built by CI on tag push, and the cask's checksum is pinned by a
+> follow-up commit moments later. If a `brew upgrade` right after a new release
+> reports a **SHA-256 mismatch**, wait a minute for that commit to land, then
+> `brew update` and retry.
 
 ## Uninstalling
 

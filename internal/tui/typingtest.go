@@ -760,7 +760,9 @@ func (m TypingTestModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 
-		case tea.KeyBackspace:
+		// Accept Backspace plus its common Linux/tmux aliases: Ctrl-H (0x08) and
+		// Delete, which some terminals send for the physical Backspace key.
+		case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 			if len(m.typed) > 0 && m.state == StateRunning {
 				if msg.Alt {
 					// Alt+Backspace: delete the previous word
@@ -890,7 +892,7 @@ func (m TypingTestModel) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.inCustomWPMInput = false
 			m.inSubMenu = false
 			return m, nil
-		case tea.KeyBackspace:
+		case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 			if len(m.customWPMInput) > 0 {
 				m.customWPMInput = m.customWPMInput[:len(m.customWPMInput)-1]
 			}
@@ -979,7 +981,7 @@ func (m TypingTestModel) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyBackspace:
+	case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 		if len(m.searchQuery) > 0 {
 			m.searchQuery = m.searchQuery[:len(m.searchQuery)-1]
 			m.filterOptions()
@@ -987,6 +989,16 @@ func (m TypingTestModel) updateOptions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyRunes:
+		// 'q' with no active search closes the menu — a plain-letter escape that
+		// needs no Esc/Ctrl chord. Matters in fastterm, where the physical Esc
+		// key is a backtick (real Escape is a Caps-tap) and Ctrl is Caps-held, so
+		// esc/ctrl-g are easy to miss. Once you've started a search, q is literal.
+		if !m.inSubMenu && m.searchQuery == "" && len(msg.Runes) == 1 &&
+			(msg.Runes[0] == 'q' || msg.Runes[0] == 'Q') {
+			m.state = StateReady
+			m.resetTest()
+			return m, nil
+		}
 		m.searchQuery += string(msg.Runes)
 		m.filterOptions()
 		return m, nil
@@ -1020,7 +1032,7 @@ func (m TypingTestModel) updateCustomPanel(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 			// Enter adds a newline to the custom text
 			m.customTextInput += "\n"
 			return m, nil
-		case tea.KeyBackspace:
+		case tea.KeyBackspace, tea.KeyDelete, tea.KeyCtrlH:
 			if len(m.customTextInput) > 0 {
 				m.customTextInput = m.customTextInput[:len(m.customTextInput)-1]
 			}
@@ -1428,7 +1440,7 @@ func (m TypingTestModel) renderOptions() string {
 	}
 
 	b.WriteString("\n")
-	b.WriteString(helpStyle.Render("↑/↓/C-p/C-n: navigate • enter: select • esc/tab/C-g: close • type to search"))
+	b.WriteString(helpStyle.Render("↑/↓/C-p/C-n: navigate • enter: select • q/esc/tab/C-g: close • type to search"))
 
 	return optionsBoxStyle.Render(b.String())
 }

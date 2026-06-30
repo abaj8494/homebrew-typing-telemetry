@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -151,6 +152,7 @@ func init() {
 	rootCmd.AddCommand(viewCmd)
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(devicesCmd)
+	rootCmd.AddCommand(pushCmd)
 }
 
 func main() {
@@ -330,7 +332,20 @@ func viewCharts() error {
 	}
 
 	fmt.Printf("Opening charts: %s\n", htmlPath)
-	return exec.Command("open", htmlPath).Start()
+	return openInBrowser(htmlPath)
+}
+
+// openInBrowser opens path (a local file or URL) in the default browser,
+// choosing the right launcher per OS so charts work on Linux as well as macOS.
+func openInBrowser(path string) error {
+	switch runtime.GOOS {
+	case "darwin":
+		return exec.Command("open", path).Start()
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", path).Start()
+	default: // linux, *bsd, …
+		return exec.Command("xdg-open", path).Start()
+	}
 }
 
 // DefaultPPI is the default pixels per inch if display info is unavailable

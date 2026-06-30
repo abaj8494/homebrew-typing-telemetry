@@ -11,6 +11,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
+	"github.com/aayushbajaj/typing-telemetry/internal/push"
 	"github.com/aayushbajaj/typing-telemetry/internal/speedtracker"
 	"github.com/aayushbajaj/typing-telemetry/internal/storage"
 	"github.com/aayushbajaj/typing-telemetry/internal/wordcounter"
@@ -35,6 +37,10 @@ var Version = "dev"
 var (
 	store *storage.Store
 	speed = &speedAccumulator{}
+
+	// Push loop state (opt-in; nil/no-op unless `typtel push enable` was run).
+	pusher     *push.Client
+	pushCancel context.CancelFunc
 )
 
 func main() {
@@ -66,6 +72,11 @@ func main() {
 			log.Println("inertia enabled")
 		}
 	}
+
+	// Start the device-push loop if it was opted into via `typtel push enable`.
+	// Off by default: with no push settings this block is a no-op and never
+	// touches the network.
+	startPushLoop()
 
 	// Restore terminal/X state on Ctrl-C or kill by routing through onExit.
 	go func() {
@@ -117,6 +128,25 @@ func inertiaConfig() inertia.Config {
 		Threshold: s.Threshold,
 		AccelRate: s.AccelRate,
 	}
+}
+
+// startPushLoop launches the background device-push loop if push was opted into.
+// It never blocks keystroke capture and is a no-op when push is disabled.
+func startPushLoop() {
+	cfg, enabled, err := push.LoadConfig(store)
+	if err != nil || !enabled {
+		return
+	}
+	c, err := push.New(cfg)
+	if err != nil {
+		log.Printf("[push] not started: %v", err)
+		return
+	}
+	pusher = c
+	var ctx context.Context
+	ctx, pushCancel = context.WithCancel(context.Background())
+	go push.RunLoop(ctx, store, c, push.LoopConfig{Interval: 45 * time.Second, Logf: log.Printf})
+	log.Printf("[push] enabled -> %s as %s", cfg.BaseURL, cfg.DeviceID) // never log the token
 }
 
 func onReady() {
@@ -195,6 +225,18 @@ func toggleInertia(item *systray.MenuItem) {
 
 func onExit() {
 	speed.flush()
+	// Final synchronous push so the day's last counts land before we close the
+	// store. Runs after speed.flush() so active_ms is current.
+	if pushCancel != nil {
+		pushCancel()
+	}
+	if pusher != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := pusher.PushToday(ctx, store); err != nil {
+			log.Printf("[push] final: %v", err)
+		}
+		cancel()
+	}
 	keylogger.Stop()
 	inertia.Stop() // restores X auto-repeat
 	if store != nil {
