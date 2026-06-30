@@ -2,6 +2,8 @@
 
 Keystroke and mouse distance metrics for developers. Tracks every keypress including modifiers, escape sequences, and shortcuts.
 
+📖 **Full documentation: <https://abaj8494.github.io/homebrew-typing-telemetry/>** — install, macOS & Linux guides, window-manager scripting, inertia, charts, the multi-device feed, and full CLI/settings reference.
+
 ![Menu Bar](img/menubar.png)
 
 ## Installation

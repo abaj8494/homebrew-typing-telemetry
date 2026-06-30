@@ -1,0 +1,59 @@
+site_name: Typtel
+site_description: Keystroke & typing telemetry for developers — macOS menu bar, Linux X11 tray, CLI, and an opt-in multi-device feed.
+site_url: https://abaj8494.github.io/homebrew-typing-telemetry/
+repo_url: https://github.com/abaj8494/typing-telemetry
+repo_name: abaj8494/typing-telemetry
+docs_dir: docs
+
+theme:
+  name: material
+  icon:
+    logo: material/keyboard
+  palette:
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: deep purple
+      accent: amber
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.tracking
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - macOS (menu bar): macos.md
+  - Linux (X11 tray): linux.md
+  - Window managers & scripting: scripting.md
+  - Inertia: inertia.md
+  - Charts: charts.md
+  - Multi-device feed: multi-device.md
+  - Reference:
+      - Settings: reference/settings.md
+      - CLI: reference/cli.md

@@ -39,3 +39,4 @@ logs/
 # Release artifacts (published to GitHub Releases, not committed)
 Typtel-*.zip
 Typtel-*.zip.sha256
+site/
