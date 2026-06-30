@@ -23,6 +23,8 @@ LaunchAgent daemon plus a manual launch won't produce two icons.
 
 ## The menu-bar title
 
+![The menu-bar title showing the orange cross-device sum: keystrokes and words](img/menubar-title.png)
+
 The status-item title is built from your enabled display toggles (see
 [Settings](#settings)). With the defaults it shows today's keystrokes and
 words, e.g. `⌨️12,345 | 678w`. Mouse clicks (`🖱️`) and distance are appended
