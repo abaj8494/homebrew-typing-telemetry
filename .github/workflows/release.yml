@@ -80,3 +80,72 @@ jobs:
             git commit -m "ci: pin cask sha256 to v${VERSION} artifact [skip ci]" -- Casks/typtel.rb
             git push origin HEAD:main
           fi
+
+  # Linux (X11) prebuilt binaries — the CLI + tray daemon for Debian-family
+  # systems, built natively on Linux with CGO (mirrors the Kali build). Attached
+  # to the same release as a tarball. Runs after `build` so the release exists.
+  build-linux:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+
+      - name: Get version from tag or input
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Linux amd64 binaries (CGO, like the Kali build)
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          mkdir -p dist
+          CGO_ENABLED=1 go build -ldflags "-s -w -X main.Version=${VERSION}" -o dist/typtel ./cmd/typtel
+          CGO_ENABLED=1 go build -ldflags "-s -w -X main.Version=${VERSION}" -o dist/typtel-tray ./cmd/typtel-tray
+
+      - name: Package tarball + checksum
+        run: |
+          VERSION=${{ steps.version.outputs.VERSION }}
+          cat > dist/INSTALL.txt <<'TXT'
+          typtel — Linux (X11) prebuilt binaries (amd64)
+
+            typtel        CLI — stats, typing test, charts (`typtel v`), inertia/push control
+            typtel-tray   daemon — keystroke capture + inertia (+ a StatusNotifier tray icon if your DE has one)
+
+          Requirements:
+            - An X11 session (DISPLAY set). Wayland is NOT supported.
+            - For inertia: `xset` — Debian/Ubuntu: sudo apt install x11-xserver-utils
+            - A recent glibc (Debian 12+/Kali/Ubuntu 22.04+).
+
+          Install:
+            mkdir -p ~/.local/bin && cp typtel typtel-tray ~/.local/bin/
+            ~/.local/bin/typtel-tray &
+
+          No system tray (i3/sway/polybar)? typtel-tray runs headless — control it from the CLI:
+            typtel inertia on|off|toggle|speed <name>|threshold <ms>|accel <rate>
+
+          Docs: https://abaj8494.github.io/homebrew-typing-telemetry/
+          TXT
+          cd dist
+          tar -czf "typtel-${VERSION}-linux-amd64.tar.gz" typtel typtel-tray INSTALL.txt
+          sha256sum "typtel-${VERSION}-linux-amd64.tar.gz" > "typtel-${VERSION}-linux-amd64.tar.gz.sha256"
+
+      - name: Attach to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/typtel-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz
+            dist/typtel-${{ steps.version.outputs.VERSION }}-linux-amd64.tar.gz.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

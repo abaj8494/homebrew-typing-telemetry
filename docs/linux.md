@@ -31,11 +31,33 @@ This means:
   focused, and a held key keeps its bit set, so auto-repeat and inertia's
   synthetic repeats never double-count a press.
 
+## Install a prebuilt binary
+
+The Homebrew cask is **macOS-only**, but each [release](https://github.com/abaj8494/typing-telemetry/releases)
+ships a Linux **amd64** tarball (`typtel-<version>-linux-amd64.tar.gz`) with both
+binaries — no build needed:
+
+Download the `typtel-<version>-linux-amd64.tar.gz` asset from the
+[latest release](https://github.com/abaj8494/typing-telemetry/releases/latest),
+then:
+
+```sh
+tar -xzf typtel-*-linux-amd64.tar.gz
+mkdir -p ~/.local/bin && cp typtel typtel-tray ~/.local/bin/
+~/.local/bin/typtel-tray &     # capture + inertia (tray icon if your DE provides one)
+```
+
+The tarball includes an `INSTALL.txt` with autostart and headless/CLI notes.
+
+!!! note
+    The prebuilt binary targets a recent glibc (Debian 12+/Kali/Ubuntu 22.04+)
+    and is **amd64** only — on arm64 (e.g. a Raspberry Pi) or older glibc, build
+    from source below. Inertia needs `xset` (`sudo apt install x11-xserver-utils`).
+
 ## Build from source
 
-The Homebrew cask is **macOS-only**. On Linux, build the two binaries from
-source. You need **Go** and a **C toolchain** — `CGO_ENABLED=1` is required for
-the SQLite driver.
+Alternatively, build the two binaries yourself. You need **Go** and a **C
+toolchain** — `CGO_ENABLED=1` is required for the SQLite driver.
 
 ```sh
 git clone https://github.com/abaj8494/typing-telemetry && cd typing-telemetry
