@@ -111,6 +111,38 @@ CGO_ENABLED=1 go build -o build/typtel-tray ./cmd/typtel-tray  # tray daemon: ca
 - **Charts**: the tray's **View Charts** item (and `typtel v`) opens the same rich dashboard as the Mac — keystrokes/words/heatmap plus key-type breakdown, streaks, and peaks — in your browser via `xdg-open`. The **typing test** (`typtel test`) works as on macOS too.
 - To start it on login, drop a launcher at `~/.config/autostart/typtel-tray.desktop` with `Exec=…/typtel-tray`.
 
+### Window managers & scripting (i3, xmonad, sway, polybar, …)
+
+No system tray? Drive typtel straight from the shell — read stats for your bar
+and control inertia from keybindings. A running `typtel-tray` applies inertia
+changes within ~2s, no restart needed.
+
+```sh
+typtel today                  # today's keystroke count (number) for a bar module
+typtel stats --json           # full stats as JSON (pipe to jq)
+typtel inertia status --json  # {enabled, max_speed, threshold, accel_rate}
+typtel inertia toggle         # bind to a key
+typtel inertia on | off
+typtel inertia speed fast     # ultra_fast|very_fast|pretty_fast|fast|medium|slow
+typtel inertia threshold 200  # ms before acceleration starts
+typtel inertia accel 1.0      # acceleration multiplier
+```
+
+i3 (`~/.config/i3/config`):
+
+```
+bindsym $mod+i exec --no-startup-id typtel inertia toggle
+```
+
+polybar module:
+
+```ini
+[module/typing]
+type = custom/script
+exec = typtel today
+interval = 5
+```
+
 ## reMarkable Connection
 
 Typtel can optionally accept keystroke aggregates from an **external device** —

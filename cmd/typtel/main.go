@@ -150,6 +150,7 @@ func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(devicesCmd)
 	rootCmd.AddCommand(pushCmd)
+	rootCmd.AddCommand(inertiaCmd)
 }
 
 func main() {
@@ -344,4 +345,3 @@ func openInBrowser(path string) error {
 		return exec.Command("xdg-open", path).Start()
 	}
 }
-

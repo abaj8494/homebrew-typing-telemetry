@@ -203,33 +203,40 @@ func onReady() {
 	systray.AddSeparator()
 	mCharts := systray.AddMenuItem("View Charts…", "Open the stats dashboard in your browser")
 
-	// --- Inertia settings submenu ---
+	// --- Inertia settings ---
+	// NOTE: keep these one level deep only. The XFCE StatusNotifier/DBusMenu
+	// host does not reliably open a submenu that itself contains submenus, so
+	// each group is its own top-level submenu of checkboxes (the flat pattern
+	// that works), not nested under a single "Inertia" parent.
 	is := store.GetInertiaSettings()
-	mInertia := systray.AddMenuItem("Inertia", "Accelerating key-repeat settings")
-	mInertiaEnable := mInertia.AddSubMenuItemCheckbox("Enable Inertia", "Toggle accelerating key-repeat", is.Enabled)
+	mInertiaEnable := systray.AddMenuItemCheckbox("Enable Inertia", "Toggle accelerating key-repeat", is.Enabled)
 
-	mMaxSpeed := mInertia.AddSubMenuItem("Max Speed", "Top repeat speed cap")
+	mMaxSpeed := systray.AddMenuItem("Inertia · Max Speed", "Top repeat speed cap")
 	for _, o := range speedOpts {
 		miSpeed[o.val] = mMaxSpeed.AddSubMenuItemCheckbox(o.label, "", is.MaxSpeed == o.val)
 	}
-	mThreshold := mInertia.AddSubMenuItem("Threshold", "Delay before acceleration starts")
+	mThreshold := systray.AddMenuItem("Inertia · Threshold", "Delay before acceleration starts")
 	for _, o := range threshOpts {
 		miThresh[o.val] = mThreshold.AddSubMenuItemCheckbox(o.label, "", is.Threshold == o.val)
 	}
-	mAccel := mInertia.AddSubMenuItem("Acceleration Rate", "How quickly speed ramps up")
+	mAccel := systray.AddMenuItem("Inertia · Acceleration", "How quickly speed ramps up")
 	for _, o := range accelOpts {
 		miAccel[o.val] = mAccel.AddSubMenuItemCheckbox(o.label, "", is.AccelRate == o.val)
 	}
 
-	// --- Charts settings ---
-	mChartsSettings := systray.AddMenuItem("Chart Settings", "")
-	mShowKeyTypes := mChartsSettings.AddSubMenuItemCheckbox(
-		"Show Key Types (letters/modifiers/special)", "", store.IsShowKeyTypesEnabled())
+	// --- Charts settings (top-level checkbox) ---
+	mShowKeyTypes := systray.AddMenuItemCheckbox(
+		"Show Key Types in charts", "Letters/modifiers/special breakdown", store.IsShowKeyTypesEnabled())
 
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit typtel", "Stop capture and exit")
 
 	refresh := func() {
+		// Pick up inertia settings changed out-of-band (e.g. `typtel inertia
+		// toggle` from a window-manager keybind) and apply them live, keeping the
+		// tray's own checkmarks in sync.
+		syncInertia(mInertiaEnable)
+
 		speed.flush()
 		st, err := store.GetTodayStats()
 		if err != nil || st == nil {
@@ -320,6 +327,33 @@ func radioCheck[K comparable](items map[K]*systray.MenuItem, sel K) {
 // applyInertia pushes the current persisted inertia settings to the running
 // system (starts/stops/updates as the Enabled flag dictates).
 func applyInertia() { inertia.UpdateConfig(inertiaConfig()) }
+
+// inertia-settings snapshot for the live watch (see syncInertia).
+var (
+	lastInertia     storage.InertiaSettings
+	haveLastInertia bool
+)
+
+// syncInertia detects inertia settings changed out-of-band (by the `typtel
+// inertia` CLI, e.g. from a WM keybind) and applies them to the running system,
+// re-syncing the tray's checkmarks. Called on the refresh ticker, so external
+// changes take effect within a couple of seconds without restarting the daemon.
+func syncInertia(enable *systray.MenuItem) {
+	s := store.GetInertiaSettings()
+	if haveLastInertia && s == lastInertia {
+		return
+	}
+	lastInertia, haveLastInertia = s, true
+	applyInertia()
+	if s.Enabled {
+		enable.Check()
+	} else {
+		enable.Uncheck()
+	}
+	radioCheck(miSpeed, s.MaxSpeed)
+	radioCheck(miThresh, s.Threshold)
+	radioCheck(miAccel, s.AccelRate)
+}
 
 func toggleInertiaEnabled(item *systray.MenuItem) {
 	enable := !store.GetInertiaSettings().Enabled
