@@ -68,6 +68,20 @@ type MouseLeaderboardEntry struct {
 	Rank          int
 }
 
+// LogDir returns (creating if needed) the typtel logs directory
+// (~/.local/share/typtel/logs), used for generated artifacts like charts.html.
+func LogDir() (string, error) {
+	dataDir, err := getDataDir()
+	if err != nil {
+		return "", err
+	}
+	logDir := filepath.Join(dataDir, "logs")
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return "", err
+	}
+	return logDir, nil
+}
+
 func getDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {

@@ -107,8 +107,8 @@ CGO_ENABLED=1 go build -o build/typtel-tray ./cmd/typtel-tray  # tray daemon: ca
 ./build/typtel-tray &   # tray icon shows today's keystrokes / words / WPM
 ```
 
-- **Inertia** drives the X server's own key auto-repeat and ramps its rate while a key is held; toggle it from the tray menu. Needs `xset` (package `x11-xserver-utils`), and restores your original repeat settings when disabled.
-- **Charts** (`typtel v`) and the **typing test** (`typtel test`) work as on macOS — charts open in your browser via `xdg-open`.
+- **Inertia** drives the X server's own key auto-repeat and ramps its rate while a key is held. The tray menu has the full controls — enable, Max Speed, Threshold, and Acceleration Rate — same as the macOS menubar. Needs `xset` (package `x11-xserver-utils`); your original repeat settings are restored when disabled.
+- **Charts**: the tray's **View Charts** item (and `typtel v`) opens the same rich dashboard as the Mac — keystrokes/words/heatmap plus key-type breakdown, streaks, and peaks — in your browser via `xdg-open`. The **typing test** (`typtel test`) works as on macOS too.
 - To start it on login, drop a launcher at `~/.config/autostart/typtel-tray.desktop` with `Exec=…/typtel-tray`.
 
 ## reMarkable Connection

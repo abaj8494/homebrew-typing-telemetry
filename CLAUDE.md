@@ -29,6 +29,7 @@ internal/appfilter/         NSWorkspace frontmost-app + per-app allowlist (added
 internal/speedtracker/      Active-time + fastest-pace WPM tracker (added v1.4)
 internal/ingest/            Opt-in HTTP device-ingest API; loopback + Tailscale serve (added v1.4142)
 internal/push/              Opt-in OUTBOUND push client — counterpart to ingest (added v1.5.0)
+internal/charts/            Shared rich Chart.js dashboard generator (menubar+CLI+tray, v1.5.1)
 internal/storage/           SQLite store + settings (+ device_* tables, devices.go)
 internal/tui/               Bubble Tea typing test
 pkg/stats/                  Pure functions for streaks / averages / peaks

@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -22,6 +23,7 @@ import (
 
 	"fyne.io/systray"
 
+	"github.com/aayushbajaj/typing-telemetry/internal/charts"
 	"github.com/aayushbajaj/typing-telemetry/internal/inertia"
 	"github.com/aayushbajaj/typing-telemetry/internal/keylogger"
 	"github.com/aayushbajaj/typing-telemetry/internal/push"
@@ -149,11 +151,47 @@ func startPushLoop() {
 	log.Printf("[push] enabled -> %s as %s", cfg.BaseURL, cfg.DeviceID) // never log the token
 }
 
+// Inertia radio-group menu items, keyed by their setting value, so a generic
+// radio helper can tick exactly one and untick the rest (systray has only
+// checkboxes — same emulation as the macOS menubar).
+var (
+	miSpeed  = map[string]*systray.MenuItem{}
+	miThresh = map[int]*systray.MenuItem{}
+	miAccel  = map[float64]*systray.MenuItem{}
+)
+
+// Ordered option tables (maps don't preserve order for the menu).
+var (
+	speedOpts = []struct{ val, label string }{
+		{storage.InertiaSpeedUltraFast, "Ultra Fast (~140/s)"},
+		{storage.InertiaSpeedVeryFast, "Very Fast (~125/s)"},
+		{storage.InertiaSpeedPrettyFast, "Pretty Fast (~100/s)"},
+		{storage.InertiaSpeedFast, "Fast (~83/s)"},
+		{storage.InertiaSpeedMedium, "Medium (~50/s)"},
+		{storage.InertiaSpeedSlow, "Slow (~20/s)"},
+	}
+	threshOpts = []struct {
+		val   int
+		label string
+	}{
+		{100, "100ms (instant)"}, {150, "150ms (fast)"}, {200, "200ms (default)"},
+		{250, "250ms (slow)"}, {350, "350ms (very slow)"},
+	}
+	accelOpts = []struct {
+		val   float64
+		label string
+	}{
+		{0.25, "0.25x (very gentle)"}, {0.5, "0.5x (gentle)"}, {1.0, "1.0x (default)"},
+		{1.5, "1.5x (faster)"}, {2.0, "2.0x (aggressive)"},
+	}
+)
+
 func onReady() {
 	systray.SetIcon(trayIcon())
 	systray.SetTitle("typtel")
 	systray.SetTooltip("typing-telemetry")
 
+	// --- live stats (disabled, display-only) ---
 	mKeys := systray.AddMenuItem("Keystrokes today: —", "")
 	mWords := systray.AddMenuItem("Words today: —", "")
 	mWPM := systray.AddMenuItem("Avg WPM: —", "")
@@ -163,8 +201,31 @@ func onReady() {
 	}
 
 	systray.AddSeparator()
-	mInertia := systray.AddMenuItemCheckbox("Inertia (accelerating repeat)",
-		"Toggle the accelerating key-repeat", inertia.IsRunning())
+	mCharts := systray.AddMenuItem("View Charts…", "Open the stats dashboard in your browser")
+
+	// --- Inertia settings submenu ---
+	is := store.GetInertiaSettings()
+	mInertia := systray.AddMenuItem("Inertia", "Accelerating key-repeat settings")
+	mInertiaEnable := mInertia.AddSubMenuItemCheckbox("Enable Inertia", "Toggle accelerating key-repeat", is.Enabled)
+
+	mMaxSpeed := mInertia.AddSubMenuItem("Max Speed", "Top repeat speed cap")
+	for _, o := range speedOpts {
+		miSpeed[o.val] = mMaxSpeed.AddSubMenuItemCheckbox(o.label, "", is.MaxSpeed == o.val)
+	}
+	mThreshold := mInertia.AddSubMenuItem("Threshold", "Delay before acceleration starts")
+	for _, o := range threshOpts {
+		miThresh[o.val] = mThreshold.AddSubMenuItemCheckbox(o.label, "", is.Threshold == o.val)
+	}
+	mAccel := mInertia.AddSubMenuItem("Acceleration Rate", "How quickly speed ramps up")
+	for _, o := range accelOpts {
+		miAccel[o.val] = mAccel.AddSubMenuItemCheckbox(o.label, "", is.AccelRate == o.val)
+	}
+
+	// --- Charts settings ---
+	mChartsSettings := systray.AddMenuItem("Chart Settings", "")
+	mShowKeyTypes := mChartsSettings.AddSubMenuItemCheckbox(
+		"Show Key Types (letters/modifiers/special)", "", store.IsShowKeyTypesEnabled())
+
 	systray.AddSeparator()
 	mQuit := systray.AddMenuItem("Quit typtel", "Stop capture and exit")
 
@@ -193,33 +254,111 @@ func onReady() {
 		}
 	}()
 
+	// --- click handlers (one goroutine per item; menu items are static) ---
 	go func() {
-		for {
-			select {
-			case <-mInertia.ClickedCh:
-				toggleInertia(mInertia)
-			case <-mQuit.ClickedCh:
-				systray.Quit()
-				return
-			}
+		for range mCharts.ClickedCh {
+			openCharts()
 		}
+	}()
+	go func() {
+		for range mInertiaEnable.ClickedCh {
+			toggleInertiaEnabled(mInertiaEnable)
+		}
+	}()
+	go func() {
+		for range mShowKeyTypes.ClickedCh {
+			toggleSetting(mShowKeyTypes, store.IsShowKeyTypesEnabled, store.SetShowKeyTypesEnabled)
+		}
+	}()
+	for _, o := range speedOpts {
+		val := o.val
+		go func() {
+			for range miSpeed[val].ClickedCh {
+				store.SetInertiaMaxSpeed(val)
+				radioCheck(miSpeed, val)
+				applyInertia()
+			}
+		}()
+	}
+	for _, o := range threshOpts {
+		val := o.val
+		go func() {
+			for range miThresh[val].ClickedCh {
+				store.SetInertiaThreshold(val)
+				radioCheck(miThresh, val)
+				applyInertia()
+			}
+		}()
+	}
+	for _, o := range accelOpts {
+		val := o.val
+		go func() {
+			for range miAccel[val].ClickedCh {
+				store.SetInertiaAccelRate(val)
+				radioCheck(miAccel, val)
+				applyInertia()
+			}
+		}()
+	}
+	go func() {
+		<-mQuit.ClickedCh
+		systray.Quit()
 	}()
 }
 
-func toggleInertia(item *systray.MenuItem) {
-	enable := !inertia.IsRunning()
+// radioCheck ticks the item whose key equals sel and unticks the others.
+func radioCheck[K comparable](items map[K]*systray.MenuItem, sel K) {
+	for k, it := range items {
+		if k == sel {
+			it.Check()
+		} else {
+			it.Uncheck()
+		}
+	}
+}
+
+// applyInertia pushes the current persisted inertia settings to the running
+// system (starts/stops/updates as the Enabled flag dictates).
+func applyInertia() { inertia.UpdateConfig(inertiaConfig()) }
+
+func toggleInertiaEnabled(item *systray.MenuItem) {
+	enable := !store.GetInertiaSettings().Enabled
 	if err := store.SetInertiaEnabled(enable); err != nil {
 		log.Printf("persist inertia setting: %v", err)
 	}
-	cfg := inertiaConfig()
-	cfg.Enabled = enable
-	inertia.UpdateConfig(cfg)
+	applyInertia()
 	if inertia.IsRunning() {
 		item.Check()
 		log.Println("inertia enabled")
 	} else {
 		item.Uncheck()
 		log.Println("inertia disabled")
+	}
+}
+
+// toggleSetting flips a boolean setting and syncs the checkbox.
+func toggleSetting(item *systray.MenuItem, get func() bool, set func(bool) error) {
+	v := !get()
+	if err := set(v); err != nil {
+		log.Printf("persist setting: %v", err)
+		return
+	}
+	if v {
+		item.Check()
+	} else {
+		item.Uncheck()
+	}
+}
+
+// openCharts generates the rich charts dashboard and opens it in a browser.
+func openCharts() {
+	path, err := charts.Generate(store, charts.Options{})
+	if err != nil {
+		log.Printf("charts: %v", err)
+		return
+	}
+	if err := exec.Command("xdg-open", path).Start(); err != nil {
+		log.Printf("open charts: %v", err)
 	}
 }
 
