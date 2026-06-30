@@ -37,6 +37,8 @@ stay Mac-only in both states — devices report neither.
 
 ## Menu sections
 
+![The typtel menu-bar dropdown: today/this-week stats, Averages, Typing Speed, Devices, Odometer, View Charts, Stillness Leaderboard, Settings, About, Quit](img/menubar-menu.png){ width="380" }
+
 Opening the menu (left-click) reveals, top to bottom:
 
 | Item | Shows |
