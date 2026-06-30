@@ -43,6 +43,13 @@ var (
 	// Push loop state (opt-in; nil/no-op unless `typtel push enable` was run).
 	pusher     *push.Client
 	pushCancel context.CancelFunc
+
+	// trayReady is set once the system-tray UI registers. On a bare WM with no
+	// StatusNotifier host it stays false and the daemon runs headless.
+	trayReady bool
+	// mInertiaEnable is the tray's Enable-Inertia checkbox (nil until the tray UI
+	// is up); the background watch updates it when present.
+	mInertiaEnable *systray.MenuItem
 )
 
 func main() {
@@ -80,15 +87,32 @@ func main() {
 	// touches the network.
 	startPushLoop()
 
-	// Restore terminal/X state on Ctrl-C or kill by routing through onExit.
+	// Background loop (always runs, tray or not): flush batched stats and apply
+	// inertia settings changed out-of-band — e.g. by the `typtel inertia` CLI
+	// from a window-manager keybind. This is what makes the CLI take effect on
+	// bare WMs (i3/sway/polybar) that have no system tray.
+	go backgroundLoop()
+
+	// Clean shutdown on signals — independent of the tray (whose onExit never
+	// runs in a headless/no-tray session).
 	go func() {
 		sig := make(chan os.Signal, 1)
 		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
 		<-sig
-		systray.Quit()
+		shutdown()
+		os.Exit(0)
 	}()
 
-	systray.Run(onReady, onExit)
+	// Try to show the tray icon. With a StatusNotifier host (XFCE/KDE/GNOME with
+	// the AppIndicator extension) this runs the menu; on a bare WM it fails to
+	// register and returns — then we keep running headless: capture, inertia, the
+	// settings watch, and push all stay live; drive it via the `typtel` CLI.
+	systray.Run(onReady, func() {})
+	if !trayReady {
+		log.Println("no system tray (StatusNotifier host) detected — running headless; control with the 'typtel' CLI")
+		select {} // keep the daemon alive; the signal handler handles shutdown
+	}
+	shutdown() // the tray's Quit was selected
 }
 
 // processKeystrokes is the shared keystroke pipeline: record each key, credit
@@ -209,7 +233,7 @@ func onReady() {
 	// each group is its own top-level submenu of checkboxes (the flat pattern
 	// that works), not nested under a single "Inertia" parent.
 	is := store.GetInertiaSettings()
-	mInertiaEnable := systray.AddMenuItemCheckbox("Enable Inertia", "Toggle accelerating key-repeat", is.Enabled)
+	mInertiaEnable = systray.AddMenuItemCheckbox("Enable Inertia", "Toggle accelerating key-repeat", is.Enabled)
 
 	mMaxSpeed := systray.AddMenuItem("Inertia · Max Speed", "Top repeat speed cap")
 	for _, o := range speedOpts {
@@ -232,11 +256,6 @@ func onReady() {
 	mQuit := systray.AddMenuItem("Quit typtel", "Stop capture and exit")
 
 	refresh := func() {
-		// Pick up inertia settings changed out-of-band (e.g. `typtel inertia
-		// toggle` from a window-manager keybind) and apply them live, keeping the
-		// tray's own checkmarks in sync.
-		syncInertia(mInertiaEnable)
-
 		speed.flush()
 		st, err := store.GetTodayStats()
 		if err != nil || st == nil {
@@ -311,6 +330,9 @@ func onReady() {
 		<-mQuit.ClickedCh
 		systray.Quit()
 	}()
+
+	// The tray UI is up; let the background watch keep its checkmarks in sync.
+	trayReady = true
 }
 
 // radioCheck ticks the item whose key equals sel and unticks the others.
@@ -328,27 +350,44 @@ func radioCheck[K comparable](items map[K]*systray.MenuItem, sel K) {
 // system (starts/stops/updates as the Enabled flag dictates).
 func applyInertia() { inertia.UpdateConfig(inertiaConfig()) }
 
-// inertia-settings snapshot for the live watch (see syncInertia).
+// inertia-settings snapshot for the background watch.
 var (
 	lastInertia     storage.InertiaSettings
 	haveLastInertia bool
 )
 
-// syncInertia detects inertia settings changed out-of-band (by the `typtel
-// inertia` CLI, e.g. from a WM keybind) and applies them to the running system,
-// re-syncing the tray's checkmarks. Called on the refresh ticker, so external
-// changes take effect within a couple of seconds without restarting the daemon.
-func syncInertia(enable *systray.MenuItem) {
-	s := store.GetInertiaSettings()
-	if haveLastInertia && s == lastInertia {
+// backgroundLoop runs regardless of the tray UI: every couple of seconds it
+// flushes batched speed stats and, if the inertia settings changed out-of-band
+// (the `typtel inertia` CLI from a WM keybind), applies them to the running
+// system. This is the path that makes the CLI take effect on bare WMs with no
+// system tray, where the tray's own ticker never starts.
+func backgroundLoop() {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	for range t.C {
+		speed.flush()
+		s := store.GetInertiaSettings()
+		if haveLastInertia && s == lastInertia {
+			continue
+		}
+		lastInertia, haveLastInertia = s, true
+		applyInertia()
+		if trayReady {
+			syncTrayChecks(s)
+		}
+	}
+}
+
+// syncTrayChecks updates the tray checkmarks to match settings (no-op when the
+// tray UI isn't up).
+func syncTrayChecks(s storage.InertiaSettings) {
+	if mInertiaEnable == nil {
 		return
 	}
-	lastInertia, haveLastInertia = s, true
-	applyInertia()
 	if s.Enabled {
-		enable.Check()
+		mInertiaEnable.Check()
 	} else {
-		enable.Uncheck()
+		mInertiaEnable.Uncheck()
 	}
 	radioCheck(miSpeed, s.MaxSpeed)
 	radioCheck(miThresh, s.Threshold)
@@ -396,26 +435,33 @@ func openCharts() {
 	}
 }
 
-func onExit() {
-	speed.flush()
-	// Final synchronous push so the day's last counts land before we close the
-	// store. Runs after speed.flush() so active_ms is current.
-	if pushCancel != nil {
-		pushCancel()
-	}
-	if pusher != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := pusher.PushToday(ctx, store); err != nil {
-			log.Printf("[push] final: %v", err)
+// shutdown cleans up exactly once: flush stats, do a final push, stop capture
+// and inertia (restoring X auto-repeat), and close the store. Called from the
+// signal handler and from the tray's Quit path.
+var shutdownOnce sync.Once
+
+func shutdown() {
+	shutdownOnce.Do(func() {
+		speed.flush()
+		// Final synchronous push so the day's last counts land before we close
+		// the store. Runs after speed.flush() so active_ms is current.
+		if pushCancel != nil {
+			pushCancel()
 		}
-		cancel()
-	}
-	keylogger.Stop()
-	inertia.Stop() // restores X auto-repeat
-	if store != nil {
-		store.Close()
-	}
-	log.Println("stopped")
+		if pusher != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := pusher.PushToday(ctx, store); err != nil {
+				log.Printf("[push] final: %v", err)
+			}
+			cancel()
+		}
+		keylogger.Stop()
+		inertia.Stop() // restores X auto-repeat
+		if store != nil {
+			store.Close()
+		}
+		log.Println("stopped")
+	})
 }
 
 // speedAccumulator batches active-time and fastest-pace writes so the keystroke

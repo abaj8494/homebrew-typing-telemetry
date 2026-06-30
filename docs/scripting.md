@@ -9,7 +9,14 @@ StatusNotifier quirks), this is the recommended way to integrate typtel:
 - **read** stats with `typtel today` / `typtel stats --json` for your bar, and
 - **control** inertia with `typtel inertia …` bound to keys.
 
-## The idea: a scriptable control surface
+## !!! note "No tray? The daemon runs headless."
+    On a bare WM with no StatusNotifier host (i3, sway, bspwm, polybar), `typtel-tray`
+    can't draw a tray icon — so it runs **headless**: capture, inertia, the
+    settings watch, and push all stay live, and you drive everything from the
+    `typtel` CLI below. Changes you make (e.g. `typtel inertia toggle`) are picked
+    up by the running daemon within ~2 seconds, no restart needed.
+
+The idea: a scriptable control surface
 
 The `typtel-tray` daemon does the actual capturing and runs inertia. But it
 also **watches its own settings** on a 2-second ticker and applies any change it
