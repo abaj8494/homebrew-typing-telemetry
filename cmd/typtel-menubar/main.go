@@ -2097,4 +2097,3 @@ func openCharts() {
 		}
 	}()
 }
-

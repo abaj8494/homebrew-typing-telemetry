@@ -41,3 +41,19 @@ On Linux, build the X11 tray from source — see **[Linux (X11)](linux.md)**.
 See **[Getting started](getting-started.md)** for first-run setup (including the
 macOS Accessibility grant), or jump to the **[CLI reference](reference/cli.md)**
 and **[Settings reference](reference/settings.md)**.
+
+## Background
+
+Typtel started as a free, local, open-source answer to **[WordCounter](https://wordcounterapp.com/)**
+— Christian Tietze's paid macOS menu-bar app that tallies the words you type
+across applications. To match it faithfully, typtel's word-boundary logic was
+reverse-engineered to mirror WordCounter's behaviour: a word is a maximal run of
+non-whitespace committed on the next Space/Return/Tab, modifier shortcuts are
+ignored, and backspace never un-counts a word (see `internal/wordcounter`). Many
+thanks to that app for the inspiration and the reference behaviour.
+
+From there it grew well past word counting into a full typing-telemetry tool —
+key-type breakdowns, [typing speed](charts.md), an [activity dashboard](charts.md),
+a typing test, [inertia](inertia.md), [Linux support](linux.md), and an opt-in
+[multi-device feed](multi-device.md) — while keeping the original promise:
+**everything stays on your machine.**

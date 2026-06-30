@@ -15,9 +15,9 @@ import (
 // spacebar. Drawn in code so the binary carries no asset files.
 func trayIcon() []byte {
 	const size = 32
-	bg := color.NRGBA{0x1e, 0x1e, 0x2e, 0xff}   // panel
-	key := color.NRGBA{0xcd, 0xd6, 0xf4, 0xff}  // keycap
-	none := color.NRGBA{0, 0, 0, 0}             // transparent
+	bg := color.NRGBA{0x1e, 0x1e, 0x2e, 0xff}  // panel
+	key := color.NRGBA{0xcd, 0xd6, 0xf4, 0xff} // keycap
+	none := color.NRGBA{0, 0, 0, 0}            // transparent
 
 	img := image.NewNRGBA(image.Rect(0, 0, size, size))
 

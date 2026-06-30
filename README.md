@@ -294,6 +294,10 @@ brew uninstall --cask typtel
 rm -rf ~/.local/share/typtel  # Optional: remove data
 ```
 
+## Background
+
+Typtel began as a free, local, open-source alternative to [WordCounter](https://wordcounterapp.com/) — Christian Tietze's paid macOS menu-bar word-counter. Its word-boundary logic is reverse-engineered to match WordCounter's (a word is a maximal run of non-whitespace committed on Space/Return/Tab; shortcuts are ignored; backspace never un-counts — see `internal/wordcounter`), then it grew into full keystroke/speed telemetry, charts, a typing test, inertia, Linux support, and an opt-in multi-device feed — all staying on your machine. Full docs: <https://abaj8494.github.io/homebrew-typing-telemetry/>.
+
 ## License
 
 MIT

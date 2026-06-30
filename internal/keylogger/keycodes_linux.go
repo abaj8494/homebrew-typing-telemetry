@@ -37,10 +37,10 @@ var evdevToMac = map[int]int{
 	41: 50, // `
 
 	// Whitespace / editing
-	57: 49,  // space
-	28: 36,  // enter -> Return
-	15: 48,  // tab
-	14: 51,  // backspace -> Delete
+	57:  49,  // space
+	28:  36,  // enter -> Return
+	15:  48,  // tab
+	14:  51,  // backspace -> Delete
 	111: 117, // delete (forward) -> ForwardDel
 
 	// Modifiers (classified as "modifier" by storage.ClassifyKeycode)

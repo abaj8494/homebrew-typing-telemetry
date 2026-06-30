@@ -56,9 +56,9 @@ func Frontmost() string {
 
 // Filter holds a thread-safe allowlist of bundle IDs.
 type Filter struct {
-	mu        sync.RWMutex
-	allow     map[string]struct{}
-	enabled   bool
+	mu      sync.RWMutex
+	allow   map[string]struct{}
+	enabled bool
 }
 
 // New returns an empty, disabled filter. When the filter is disabled,
